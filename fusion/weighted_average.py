@@ -1,6 +1,6 @@
 from collections import defaultdict
 
-from fusion.base import FusionStrategy, FusedResult
+from fusion.base import FusedResult, FusionStrategy
 from sensors.base import SensorObservation
 
 

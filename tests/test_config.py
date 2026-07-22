@@ -48,7 +48,7 @@ def test_sensor_entry_with_position() -> None:
     raw = {
         "id": "uwb-1",
         "type": "uwb",
-        "class": "sensors.drivers.uwb.driver.UwbAnchorSensor",
+        "class": "sensors.drivers.uwb.UwbAnchorSensor",
         "params": {"serial_port": "/dev/ttyACM0", "position": {"x": 1.0, "y": 2.0, "z": 0.0}},
         "position": {"x": 1.0, "y": 2.0, "z": 0.0},
     }

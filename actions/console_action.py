@@ -2,7 +2,7 @@ import json
 from datetime import timezone
 from typing import Optional
 
-from actions.base import ActionTrigger, ActionResult
+from actions.base import ActionResult, ActionTrigger
 from fusion.base import FusedResult
 
 

@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
 """End-to-end demo: mock sensor → fusion → action.
 
+Uses MlFusion if ``fusion/model.pkl`` exists; otherwise falls back
+to WeightedAverageFusion.  No real hardware or MQTT broker required.
+
 Run with:
     python run_demo.py
-
-No real hardware, MQTT broker, or external dependencies beyond
-what pip install provides.
 """
 
 import time
 
 from sensors.mock_sensor import MockSensor
-from fusion.weighted_average import WeightedAverageFusion
 from actions.console_action import ConsoleAction
+
+
+def _get_fuser():
+    try:
+        from fusion.ml_fusion import MlFusion
+        return MlFusion()
+    except ImportError:
+        from fusion.weighted_average import WeightedAverageFusion
+        print("[demo] MlFusion unavailable — using WeightedAverageFusion")
+        return WeightedAverageFusion()
 
 
 def main() -> None:
@@ -21,7 +30,7 @@ def main() -> None:
     print("=" * 50)
 
     sensor = MockSensor(sensor_id="demo-01")
-    fuser = WeightedAverageFusion(type_weights={"mock": 1.0})
+    fuser = _get_fuser()
     action = ConsoleAction(min_confidence=0.3)
 
     for cycle in range(5):
@@ -31,7 +40,7 @@ def main() -> None:
         print(f"  Sensor produced {len(observations)} observation(s)")
 
         fused = fuser.fuse(observations)
-        print(f"  Fused confidence: {fused.confidence:.4f}")
+        print(f"  Fused: label={fused.activity_label}  confidence={fused.confidence:.4f}")
 
         result = action.evaluate(fused)
         if result is not None:

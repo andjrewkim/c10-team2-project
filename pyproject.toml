@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "iot-activity-detection"
-version = "0.1.0"
-description = "Multi-sensor IoT activity-detection framework with pluggable sensors, fusion, and actions."
+version = "0.2.0"
+description = "Multi-sensor activity-detection system with ML fusion — university project."
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,6 +21,15 @@ dev = [
     "mypy>=1.0",
     "ruff>=0.1",
 ]
+ui = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "numpy>=1.24",
+]
+train = [
+    "numpy>=1.24",
+    "scikit-learn>=1.3",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -31,7 +40,7 @@ python_version = "3.11"
 ignore_missing_imports = true
 
 [tool.setuptools.packages.find]
-include = ["sensors*", "transport*", "fusion*", "actions*", "config*", "recording*"]
+include = ["sensors*", "transport*", "fusion*", "actions*", "config*", "recording*", "training*", "ui*", "src*"]
 
 [tool.ruff]
 target-version = "py311"

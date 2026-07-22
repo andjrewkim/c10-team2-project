@@ -16,7 +16,7 @@ sensors:
   # ---------- IMU (I2C accelerometer + gyroscope) ----------
   - id: "imu-waist"
     type: "imu"
-    class: "sensors.drivers.imu.driver.ImuSensor"
+    class: "sensors.drivers.imu.ImuSensor"
     params:
       i2c_bus: 1
       i2c_address: "0x28"           # BNO055 default
@@ -24,7 +24,7 @@ sensors:
   # ---------- UWB anchor 1 of 3 (time-of-flight ranging) ----------
   - id: "uwb-anchor-1"
     type: "uwb"
-    class: "sensors.drivers.uwb.driver.UwbAnchorSensor"
+    class: "sensors.drivers.uwb.UwbAnchorSensor"
     params:
       serial_port: "/dev/ttyACM0"
       baudrate: 115200
@@ -34,7 +34,7 @@ sensors:
         z: 2.5
   - id: "uwb-anchor-2"
     type: "uwb"
-    class: "sensors.drivers.uwb.driver.UwbAnchorSensor"
+    class: "sensors.drivers.uwb.UwbAnchorSensor"
     params:
       serial_port: "/dev/ttyACM1"
       baudrate: 115200
@@ -44,7 +44,7 @@ sensors:
         z: 2.5
   - id: "uwb-anchor-3"
     type: "uwb"
-    class: "sensors.drivers.uwb.driver.UwbAnchorSensor"
+    class: "sensors.drivers.uwb.UwbAnchorSensor"
     params:
       serial_port: "/dev/ttyACM2"
       baudrate: 115200
@@ -56,7 +56,7 @@ sensors:
   # ---------- mmWave radar (TI IWR6843, point cloud / range-doppler) ----------
   - id: "radar-ceiling"
     type: "mmwave"
-    class: "sensors.drivers.mmwave.driver.MmWaveRadarSensor"
+    class: "sensors.drivers.mmwave.MmWaveRadarSensor"
     params:
       serial_port: "/dev/ttyUSB0"
       cli_port: "/dev/ttyUSB1"
@@ -66,7 +66,7 @@ sensors:
   # ---------- RFID reader (UHF, one reader reads many tags) ----------
   - id: "rfid-gate-1"
     type: "rfid"
-    class: "sensors.drivers.rfid.driver.RfidReaderSensor"
+    class: "sensors.drivers.rfid.RfidReaderSensor"
     params:
       host: "192.168.1.100"
       port: 5084
@@ -75,13 +75,13 @@ sensors:
   # ---------- WiFi RSSI/CSI monitor ----------
   - id: "wifi-monitor-1"
     type: "wifi"
-    class: "sensors.drivers.wifi.driver.WiFiSensor"
+    class: "sensors.drivers.wifi.WiFiSensor"
     params:
       interface: "wlan0"
       mode: "rssi"
   - id: "wifi-monitor-2"
     type: "wifi"
-    class: "sensors.drivers.wifi.driver.WiFiSensor"
+    class: "sensors.drivers.wifi.WiFiSensor"
     params:
       interface: "wlan1"
       mode: "rssi"

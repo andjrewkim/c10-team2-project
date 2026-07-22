@@ -1,4 +1,5 @@
-from fusion.base import FusionStrategy, FusedResult
+from fusion.base import FusedResult, FusionStrategy
+from fusion.ml_fusion import MlFusion
 from fusion.weighted_average import WeightedAverageFusion
 
-__all__ = ["FusionStrategy", "FusedResult", "WeightedAverageFusion"]
+__all__ = ["FusionStrategy", "FusedResult", "MlFusion", "WeightedAverageFusion"]

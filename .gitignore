@@ -41,3 +41,5 @@ coverage/
 # Recorded data (never commit raw sensor recordings)
 /data/raw/*.csv
 /data/raw/*.parquet
+
+/.freebuff

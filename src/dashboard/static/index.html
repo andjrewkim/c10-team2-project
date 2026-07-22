@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Localization Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8f9fa; color: #1a1a2e; padding: 2rem; }
+  h1 { font-size: 1.4rem; font-weight: 500; letter-spacing: -0.01em; margin-bottom: 0.2rem; }
+  .subtitle { color: #6c757d; font-size: 0.8rem; font-weight: 400; margin-bottom: 1.5rem; }
+  .dashboard { display: grid; grid-template-columns: 1fr 300px; gap: 1.5rem; }
+  @media (max-width: 900px) { .dashboard { grid-template-columns: 1fr; } }
+  .card { background: #ffffff; border: 1px solid #dee2e6; border-radius: 6px; padding: 1.25rem; }
+  .card h2 { font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #495057; margin-bottom: 0.75rem; }
+  #floorplan { width: 100%; aspect-ratio: 4/3; display: block; background: #ffffff; border: 1px solid #e9ecef; border-radius: 4px; position: relative; }
+  #floorplan canvas { width: 100%; height: 100%; border-radius: 4px; display: block; }
+  .position-info { display: flex; gap: 2rem; margin-top: 0.75rem; font-size: 0.8rem; color: #495057; font-family: "SF Mono", "Fira Code", monospace; }
+  .position-info span { display: flex; gap: 0.3rem; }
+  .position-info strong { font-weight: 600; color: #1a1a2e; }
+  .side-panel { display: flex; flex-direction: column; gap: 1rem; }
+  .sensor-list { background: #ffffff; border: 1px solid #dee2e6; border-radius: 6px; padding: 1rem; }
+  .sensor-list h2 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #495057; margin-bottom: 0.6rem; }
+  .sensor-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #f0f0f0; font-size: 0.8rem; }
+  .sensor-row:last-child { border-bottom: none; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .dot.connected { background: #2b9348; }
+  .dot.stale { background: #e09f3e; }
+  .dot.offline { background: #d00000; }
+  .sensor-row .id { font-weight: 500; flex: 1; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.75rem; }
+  .sensor-row .type { color: #6c757d; font-size: 0.7rem; }
+  .sensor-row .val { color: #1a1a2e; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.7rem; }
+  .coords-box { background: #ffffff; border: 1px solid #dee2e6; border-radius: 6px; padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.3rem; }
+  .coords-box .row { display: flex; justify-content: space-between; font-size: 0.8rem; }
+  .coords-box .label { color: #6c757d; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  .coords-box .value { color: #1a1a2e; font-family: "SF Mono", "Fira Code", monospace; font-weight: 500; }
+  .confidence-bar { height: 3px; border-radius: 1px; margin-top: 0.25rem; background: #e9ecef; overflow: hidden; }
+  .confidence-fill { height: 100%; border-radius: 1px; transition: width 0.3s; background: #1a1a2e; }
+  .legend { display: flex; gap: 1rem; margin-top: 0.5rem; font-size: 0.7rem; color: #6c757d; }
+  .legend span { display: flex; align-items: center; gap: 0.3rem; }
+  .legend .swatch { width: 8px; height: 8px; border-radius: 1px; display: inline-block; }
+</style>
+</head>
+<body>
+
+<h1>Spatial Localization</h1>
+<p class="subtitle">Estimated position: <span id="pos-summary">—</span></p>
+
+<div class="dashboard">
+
+  <!-- Floor Plan + Heatmap -->
+  <div class="card">
+    <h2>Confidence Heatmap &mdash; Floor Plan</h2>
+    <div id="floorplan"><canvas id="heatmap-canvas"></canvas></div>
+    <div class="position-info">
+      <span><strong>x</strong> <span id="pos-x">—</span> m</span>
+      <span><strong>y</strong> <span id="pos-y">—</span> m</span>
+      <span><strong>p</strong> <span id="pos-conf">—</span></span>
+    </div>
+    <div class="legend">
+      <span><span class="swatch" style="background:#1a1a2e"></span>high</span>
+      <span><span class="swatch" style="background:#6c757d"></span>medium</span>
+      <span><span class="swatch" style="background:#dee2e6"></span>low</span>
+    </div>
+  </div>
+
+  <!-- Side Panel -->
+  <div class="side-panel">
+    <div class="coords-box">
+      <div class="row"><span class="label">Position</span><span class="value" id="coords-xy">—</span></div>
+      <div class="row"><span class="label">Confidence</span><span class="value" id="coords-conf">—</span></div>
+      <div class="confidence-bar"><div class="confidence-fill" id="conf-fill" style="width:0%"></div></div>
+    </div>
+    <div class="sensor-list">
+      <h2>Connected Sensors</h2>
+      <div id="sensor-rows"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const canvas = document.getElementById("heatmap-canvas");
+const ctx = canvas.getContext("2d");
+let roomOrigin = [0, 0];
+let roomSize = [8, 6];
+let gridCells = 20;
+
+function resizeCanvas() {
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  canvas.style.width = rect.width + "px";
+  canvas.style.height = rect.height + "px";
+  ctx.scale(dpr, dpr);
+  canvas._w = rect.width;
+  canvas._h = rect.height;
+}
+resizeCanvas();
+window.addEventListener("resize", resizeCanvas);
+
+function heatColor(v) {
+  const r = Math.min(255, Math.floor(26 + 200 * v));
+  const g = Math.min(255, Math.floor(42 + 180 * v));
+  const b = Math.min(240, Math.floor(46 + 200 * v));
+  return `rgba(${r},${g},${b},${0.3 + 0.7 * v})`;
+}
+
+function renderHeatmap(grid) {
+  if (!grid || !grid.length) return;
+  const w = canvas._w || 400;
+  const h = canvas._h || 300;
+  const nc = grid.length;
+  const cw = w / nc;
+  const ch = h / nc;
+
+  ctx.clearRect(0, 0, w, h);
+
+  for (let i = 0; i < nc; i++) {
+    for (let j = 0; j < nc; j++) {
+      const val = grid[i][j];
+      if (val > 0.001) {
+        ctx.fillStyle = heatColor(Math.min(1, val * 15));
+        ctx.fillRect(j * cw, i * ch, cw, ch);
+      }
+    }
+  }
+
+  // Subtle grid lines
+  ctx.strokeStyle = "#e9ecef";
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= nc; i++) {
+    ctx.beginPath();
+    ctx.moveTo(0, i * ch);
+    ctx.lineTo(w, i * ch);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(i * cw, 0);
+    ctx.lineTo(i * cw, h);
+    ctx.stroke();
+  }
+
+  // Position marker
+  const estText = document.getElementById("pos-x").textContent;
+  if (estText !== "\u2014" && roomSize[0] > 0) {
+    const ex = parseFloat(document.getElementById("pos-x").textContent);
+    const ey = parseFloat(document.getElementById("pos-y").textContent);
+    const px = ((ex - roomOrigin[0]) / roomSize[0]) * w;
+    const py = ((ey - roomOrigin[1]) / roomSize[1]) * h;
+    if (px >= 0 && px <= w && py >= 0 && py <= h) {
+      const conf = parseFloat(document.getElementById("pos-conf").textContent) || 0.5;
+      const r = 4 + conf * 4;
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.fillStyle = "#d00000";
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = "#1a1a2e";
+      ctx.font = "10px 'SF Mono', 'Fira Code', monospace";
+      ctx.fillText(`(${ex.toFixed(2)}, ${ey.toFixed(2)})`, px + r + 5, py + 3);
+    }
+  }
+}
+
+// WebSocket
+let wsUrl = "ws://" + location.host + "/ws";
+if (location.protocol === "https:") wsUrl = "wss://" + location.host + "/ws";
+
+let ws;
+function connect() {
+  ws = new WebSocket(wsUrl);
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "dashboard_update") {
+        updateSensors(msg.sensors || []);
+        if (msg.localization) updateLocalization(msg.localization);
+      }
+    } catch (_) {}
+  };
+  ws.onclose = () => setTimeout(connect, 1000);
+}
+connect();
+
+function updateSensors(sensors) {
+  const container = document.getElementById("sensor-rows");
+  container.innerHTML = "";
+  for (const s of sensors) {
+    const row = document.createElement("div");
+    row.className = "sensor-row";
+    row.innerHTML = `
+      <span class="dot ${s.status}"></span>
+      <span class="id">${escapeHtml(s.sensor_id)}</span>
+      <span class="type">${escapeHtml(s.sensor_type)}</span>
+      <span class="val">${s.status}</span>
+    `;
+    container.appendChild(row);
+  }
+}
+
+function updateLocalization(loc) {
+  const pos = loc.position || {};
+  const grid = loc.belief_grid;
+  const origin = loc.room_origin || [0, 0];
+  const size = loc.room_size || [8, 6];
+
+  roomOrigin = origin;
+  roomSize = size;
+
+  const x = pos.x !== undefined ? pos.x.toFixed(2) : "\u2014";
+  const y = pos.y !== undefined ? pos.y.toFixed(2) : "\u2014";
+  const confVal = pos.confidence !== undefined ? (pos.confidence * 100).toFixed(1) + "%" : "\u2014";
+  const confNum = pos.confidence || 0;
+
+  document.getElementById("pos-x").textContent = x;
+  document.getElementById("pos-y").textContent = y;
+  document.getElementById("pos-conf").textContent = confVal;
+  document.getElementById("coords-xy").textContent = `(${x}, ${y})`;
+  document.getElementById("coords-conf").textContent = confVal;
+  document.getElementById("conf-fill").style.width = `${Math.min(100, confNum * 100)}%`;
+  document.getElementById("pos-summary").textContent = `(${x}, ${y})  confidence ${confVal}`;
+
+  if (grid && grid.length) {
+    renderHeatmap(grid);
+  }
+}
+
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>

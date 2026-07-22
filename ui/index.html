@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sensor Control Panel</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8f9fa; color: #1a1a2e; padding: 2rem; }
+  h1 { font-size: 1.4rem; font-weight: 500; letter-spacing: -0.01em; margin-bottom: 0.2rem; }
+  .subtitle { color: #6c757d; font-size: 0.8rem; margin-bottom: 1.5rem; }
+  .status-banner { padding: 0.6rem 1rem; border-radius: 4px; margin-bottom: 1.5rem; font-size: 0.85rem; display: flex; align-items: center; border: 1px solid; }
+  .status-banner.idle { background: #f8f9fa; border-color: #dee2e6; color: #6c757d; }
+  .status-banner.recording { background: #fff5f5; border-color: #e03131; color: #c92a2a; }
+  .status-banner.stopped { background: #f4fce3; border-color: #2b8a3e; color: #2b8a3e; }
+  .broker-status { margin-left: auto; font-size: 0.75rem; font-family: "SF Mono", "Fira Code", monospace; padding: 0.15rem 0.5rem; border-radius: 3px; }
+  .broker-status.online { background: #e9ecef; color: #2b8a3e; }
+  .broker-status.offline { background: #e9ecef; color: #e03131; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.4rem; flex-shrink: 0; }
+  .dot.live { background: #2b9348; }
+  .dot.stale { background: #e09f3e; }
+  .dot.never { background: #ced4da; }
+  .sensor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.75rem; margin-bottom: 2rem; }
+  .sensor-card { background: #ffffff; border: 1px solid #dee2e6; border-radius: 4px; padding: 0.75rem; }
+  .sensor-card.live { border-left: 3px solid #2b9348; }
+  .sensor-card.stale { border-left: 3px solid #e09f3e; }
+  .sensor-card .header { display: flex; align-items: center; margin-bottom: 0.5rem; }
+  .sensor-card .id { font-weight: 500; font-size: 0.8rem; font-family: "SF Mono", "Fira Code", monospace; }
+  .sensor-card .type { font-size: 0.7rem; color: #6c757d; margin-left: auto; }
+  .sensor-card .meta { font-size: 0.75rem; color: #495057; display: flex; flex-direction: column; gap: 0.15rem; }
+  .sensor-card .meta .row { display: flex; justify-content: space-between; }
+  .sensor-card .confidence { font-weight: 600; font-family: "SF Mono", "Fira Code", monospace; }
+  .form-card { background: #ffffff; border: 1px solid #dee2e6; border-radius: 6px; padding: 1.25rem; }
+  .form-card h3 { margin-bottom: 0.75rem; font-size: 0.85rem; font-weight: 600; color: #495057; }
+  .form-row { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+  .form-row label { display: flex; flex-direction: column; gap: 0.2rem; flex: 1; min-width: 120px; }
+  .form-row label span { font-size: 0.7rem; color: #6c757d; text-transform: uppercase; letter-spacing: 0.03em; }
+  input { background: #ffffff; border: 1px solid #dee2e6; border-radius: 4px; padding: 0.45rem 0.6rem; color: #1a1a2e; font-size: 0.8rem; }
+  input:focus { outline: none; border-color: #1a1a2e; }
+  .btn-group { display: flex; gap: 0.5rem; }
+  button { padding: 0.45rem 1rem; border-radius: 4px; border: 1px solid #1a1a2e; font-size: 0.8rem; font-weight: 500; cursor: pointer; transition: background 0.15s; background: #ffffff; color: #1a1a2e; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button#btn-start { background: #1a1a2e; color: #ffffff; }
+  button#btn-start:hover:not(:disabled) { background: #2d2d4e; }
+  button#btn-stop { background: #ffffff; color: #e03131; border-color: #e03131; }
+  button#btn-stop:hover:not(:disabled) { background: #fff5f5; }
+</style>
+</head>
+<body>
+
+<h1>Sensor Control Panel</h1>
+<p class="subtitle">live monitoring &amp; recording</p>
+
+<div id="status-banner" class="status-banner idle">
+  <span id="status-text">idle</span>
+  <span id="broker-status" class="broker-status"></span>
+</div>
+
+<div class="sensor-grid" id="sensor-grid"></div>
+
+<div class="form-card">
+  <h3>Recording</h3>
+  <div class="form-row">
+    <label><span>Activity</span><input type="text" id="input-label" placeholder="walking" value="walking"></label>
+    <label><span>Participant</span><input type="text" id="input-participant" placeholder="alice" value="alice"></label>
+    <label><span>Duration (s)</span><input type="number" id="input-duration" value="15" min="0"></label>
+  </div>
+  <div class="btn-group">
+    <button id="btn-start">Start</button>
+    <button id="btn-stop" disabled>Stop</button>
+  </div>
+</div>
+
+<script>
+const SENSOR_GRID = document.getElementById("sensor-grid");
+const STATUS_BANNER = document.getElementById("status-banner");
+const STATUS_TEXT = document.getElementById("status-text");
+const BROKER_STATUS = document.getElementById("broker-status");
+const INPUT_LABEL = document.getElementById("input-label");
+const INPUT_PARTICIPANT = document.getElementById("input-participant");
+const INPUT_DURATION = document.getElementById("input-duration");
+const BTN_START = document.getElementById("btn-start");
+const BTN_STOP = document.getElementById("btn-stop");
+
+let recordingActive = false;
+
+function renderSensors(sensors) {
+  SENSOR_GRID.innerHTML = "";
+  for (const s of sensors) {
+    const card = document.createElement("div");
+    card.className = "sensor-card " + s.status;
+    const dotClass = s.last_seen === null ? "never" : s.status;
+    const conf = s.last_confidence != null ? s.last_confidence.toFixed(3) : "\u2014";
+    const seen = s.last_seen ? new Date(s.last_seen).toLocaleTimeString() : "\u2014";
+    card.innerHTML = `
+      <div class="header">
+        <span class="dot ${dotClass}"></span>
+        <span class="id">${escapeHtml(s.sensor_id)}</span>
+        <span class="type">${escapeHtml(s.sensor_type)}</span>
+      </div>
+      <div class="meta">
+        <div class="row"><span>status</span><span>${s.status}</span></div>
+        <div class="row"><span>confidence</span><span class="confidence">${conf}</span></div>
+        <div class="row"><span>last seen</span><span>${seen}</span></div>
+      </div>
+    `;
+    SENSOR_GRID.appendChild(card);
+  }
+}
+
+function renderRecording(info) {
+  recordingActive = info.state === "recording";
+  STATUS_BANNER.className = "status-banner " + info.state;
+  switch (info.state) {
+    case "idle":
+      STATUS_TEXT.textContent = "idle";
+      break;
+    case "recording":
+      STATUS_TEXT.textContent = `recording: ${escapeHtml(info.label)}  ${formatElapsed(info.elapsed_seconds)}`;
+      break;
+    case "stopped":
+      STATUS_TEXT.textContent = "session saved to data/raw/";
+      break;
+  }
+  BTN_START.disabled = recordingActive;
+  BTN_STOP.disabled = !recordingActive;
+}
+
+function renderBroker(connected) {
+  BROKER_STATUS.textContent = connected ? "mqtt connected" : "mqtt offline";
+  BROKER_STATUS.className = "broker-status " + (connected ? "online" : "offline");
+}
+
+function formatElapsed(secs) {
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+let wsUrl = "ws://" + location.host + "/ws";
+if (location.protocol === "https:") wsUrl = "wss://" + location.host + "/ws";
+
+let ws;
+function connect() {
+  ws = new WebSocket(wsUrl);
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "sensor_snapshot") {
+        renderSensors(msg.sensors);
+        renderRecording(msg.recording);
+        renderBroker(msg.broker_connected);
+      }
+    } catch (_) {}
+  };
+  ws.onclose = () => setTimeout(connect, 1000);
+}
+connect();
+
+BTN_START.addEventListener("click", async () => {
+  const body = {
+    label: INPUT_LABEL.value.trim(),
+    participant: INPUT_PARTICIPANT.value.trim(),
+    duration: parseInt(INPUT_DURATION.value) || 0,
+  };
+  if (!body.label || !body.participant) return;
+  try {
+    const resp = await fetch("/api/recording/start", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+    if (!resp.ok) console.error("start failed", await resp.text());
+  } catch (e) { console.error(e); }
+});
+
+BTN_STOP.addEventListener("click", async () => {
+  try {
+    const resp = await fetch("/api/recording/stop", { method: "POST" });
+    if (!resp.ok) console.error("stop failed", await resp.text());
+  } catch (e) { console.error(e); }
+});
+</script>
+</body>
+</html>

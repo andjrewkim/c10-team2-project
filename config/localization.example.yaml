@@ -1,0 +1,51 @@
+# localization.example.yaml
+# -----------------------------------------------------------------------
+# Room geometry and fixed sensor positions for spatial localisation.
+# All distances in metres.  The belief grid is computed over the
+# room rectangle defined by [origin, origin + size].
+# -----------------------------------------------------------------------
+
+room:
+  origin: {x: 0.0, y: 0.0}       # bottom-left corner of the tracked area
+  size:   {x: 8.0, y: 6.0}       # width × depth in metres
+  grid_cells: 20                  # cells along each axis (total = N²)
+
+# UWB anchors — each has a fixed known 3D position
+# At least 3 anchors required for 2D trilateration.
+uwb_anchors:
+  - id: "uwb-anchor-1"
+    position: {x: 0.0, y: 0.0, z: 2.5}
+  - id: "uwb-anchor-2"
+    position: {x: 5.0, y: 0.0, z: 2.5}
+  - id: "uwb-anchor-3"
+    position: {x: 2.5, y: 4.0, z: 2.5}
+
+# RFID readers — position where the reader antenna is located
+# When the reader detects a tag, the belief is biased toward this location.
+rfid_readers:
+  - id: "rfid-gate-1"
+    position: {x: 1.0, y: 3.0, z: 1.5}
+
+# Optional: known stationary tag positions (e.g. on furniture)
+rfid_tag_positions:
+  - tag_id: "E280116060000204"
+    position: {x: 4.0, y: 2.5, z: 1.0}
+  - tag_id: "E280116060000205"
+    position: {x: 1.5, y: 4.5, z: 0.8}
+
+# WiFi AP positions (for RSSI-based proximity weighting)
+wifi_ap_positions:
+  - bssid: "AA:BB:CC:DD:EE:01"
+    position: {x: 2.0, y: 1.0, z: 2.0}
+  - bssid: "AA:BB:CC:DD:EE:02"
+    position: {x: 4.0, y: 5.0, z: 2.0}
+
+# Localization parameters
+localization:
+  temporal_decay: 0.92            # multiply belief grid by this each tick
+  uwb_gaussian_sigma: 0.5         # std-dev of Gaussian kernel (metres)
+  rfid_gaussian_sigma: 0.8
+  mmwave_gaussian_sigma: 1.0
+  wifi_gaussian_sigma: 1.5
+  imu_motion_threshold: 0.5       # m/s² — below this, smooth position
+  position_smoothing: 0.7         # EMA weight: 0.7 = 70% new, 30% old
