@@ -16,6 +16,22 @@ def test_sensor_observation_contract() -> None:
     assert obs.sensor_id == "test-01"
     assert obs.sensor_type == "mock"
     assert 0.0 <= obs.confidence <= 1.0
+    assert obs.position is None
+    assert obs.tag_id is None
+
+
+def test_sensor_observation_with_position_and_tag_id() -> None:
+    obs = SensorObservation(
+        sensor_id="uwb-1",
+        sensor_type="uwb",
+        timestamp=datetime.now(timezone.utc),
+        observation={"range_m": 1.5},
+        confidence=0.9,
+        position={"x": 0.0, "y": 1.0, "z": 2.5},
+        tag_id="tag-001",
+    )
+    assert obs.position == {"x": 0.0, "y": 1.0, "z": 2.5}
+    assert obs.tag_id == "tag-001"
 
 
 def test_mock_sensor_produces_valid_observations() -> None:

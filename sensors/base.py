@@ -4,6 +4,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+from typing import Optional
+
+
 @dataclass
 class SensorObservation:
     """Universal observation contract every sensor node must publish.
@@ -26,6 +29,14 @@ class SensorObservation:
     metadata : dict[str, Any]
         Extensible bag of auxiliary info (e.g. firmware version,
         battery level, signal strength). Never required for core flow.
+    position : dict[str, float] | None
+        Fixed known location of the sensor as ``{"x": ..., "y": ..., "z": ...}``
+        in metres.  Set at construction time for stationary sensors
+        (e.g. UWB anchors); left as None for mobile or unspecified sensors.
+    tag_id : str | None
+        Identifier for the tracked entity when a single sensor produces
+        observations for many entities (e.g. RFID tags seen by one reader,
+        WiFi APs seen by one monitor).  None when the sensor is the entity.
     """
 
     sensor_id: str
@@ -34,6 +45,8 @@ class SensorObservation:
     observation: Any = None
     confidence: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
+    position: Optional[dict[str, float]] = None
+    tag_id: Optional[str] = None
 
 
 class BaseSensor(ABC):

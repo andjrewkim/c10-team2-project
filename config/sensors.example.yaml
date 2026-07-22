@@ -5,18 +5,83 @@
 # -----------------------------------------------------------------------
 
 sensors:
+  # ---------- Mock (for testing the pipeline) ----------
   - id: "mock-001"
-    type: "mock"                  # maps to a sensor class registered in the code
+    type: "mock"
     class: "sensors.mock_sensor.MockSensor"
     params:
       min_confidence: 0.2
       max_confidence: 0.9
 
-  # Example of what a real sensor entry would look like:
-  # - id: "pir-living-room"
-  #   type: "pir"
-  #   class: "sensors.pir_sensor.PirSensor"
-  #   params:
-  #     pin: 17
-  #     debounce_ms: 200
-  #   location: "living-room"
+  # ---------- IMU (I2C accelerometer + gyroscope) ----------
+  - id: "imu-waist"
+    type: "imu"
+    class: "sensors.drivers.imu.driver.ImuSensor"
+    params:
+      i2c_bus: 1
+      i2c_address: "0x28"           # BNO055 default
+
+  # ---------- UWB anchor 1 of 3 (time-of-flight ranging) ----------
+  - id: "uwb-anchor-1"
+    type: "uwb"
+    class: "sensors.drivers.uwb.driver.UwbAnchorSensor"
+    params:
+      serial_port: "/dev/ttyACM0"
+      baudrate: 115200
+      position:                      # fixed known location (metres)
+        x: 0.0
+        y: 0.0
+        z: 2.5
+  - id: "uwb-anchor-2"
+    type: "uwb"
+    class: "sensors.drivers.uwb.driver.UwbAnchorSensor"
+    params:
+      serial_port: "/dev/ttyACM1"
+      baudrate: 115200
+      position:
+        x: 5.0
+        y: 0.0
+        z: 2.5
+  - id: "uwb-anchor-3"
+    type: "uwb"
+    class: "sensors.drivers.uwb.driver.UwbAnchorSensor"
+    params:
+      serial_port: "/dev/ttyACM2"
+      baudrate: 115200
+      position:
+        x: 2.5
+        y: 4.0
+        z: 2.5
+
+  # ---------- mmWave radar (TI IWR6843, point cloud / range-doppler) ----------
+  - id: "radar-ceiling"
+    type: "mmwave"
+    class: "sensors.drivers.mmwave.driver.MmWaveRadarSensor"
+    params:
+      serial_port: "/dev/ttyUSB0"
+      cli_port: "/dev/ttyUSB1"
+      baudrate_data: 921600
+      baudrate_cli: 115200
+
+  # ---------- RFID reader (UHF, one reader reads many tags) ----------
+  - id: "rfid-gate-1"
+    type: "rfid"
+    class: "sensors.drivers.rfid.driver.RfidReaderSensor"
+    params:
+      host: "192.168.1.100"
+      port: 5084
+      read_power: 30
+
+  # ---------- WiFi RSSI/CSI monitor ----------
+  - id: "wifi-monitor-1"
+    type: "wifi"
+    class: "sensors.drivers.wifi.driver.WiFiSensor"
+    params:
+      interface: "wlan0"
+      mode: "rssi"
+  - id: "wifi-monitor-2"
+    type: "wifi"
+    class: "sensors.drivers.wifi.driver.WiFiSensor"
+    params:
+      interface: "wlan1"
+      mode: "rssi"

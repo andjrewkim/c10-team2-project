@@ -44,6 +44,31 @@ def test_fusion_config_custom_weights() -> None:
     assert cfg.type_weights["a"] == 2.0
 
 
+def test_sensor_entry_with_position() -> None:
+    raw = {
+        "id": "uwb-1",
+        "type": "uwb",
+        "class": "sensors.drivers.uwb.driver.UwbAnchorSensor",
+        "params": {"serial_port": "/dev/ttyACM0", "position": {"x": 1.0, "y": 2.0, "z": 0.0}},
+        "position": {"x": 1.0, "y": 2.0, "z": 0.0},
+    }
+    entry = SensorEntry.model_validate(raw)
+    assert entry.position is not None
+    assert entry.position.x == 1.0
+    assert entry.position.y == 2.0
+    assert entry.position.z == 0.0
+
+
+def test_sensor_entry_position_optional() -> None:
+    raw = {
+        "id": "mock-1",
+        "type": "mock",
+        "class": "sensors.mock_sensor.MockSensor",
+    }
+    entry = SensorEntry.model_validate(raw)
+    assert entry.position is None
+
+
 def test_mqtt_config_model() -> None:
     cfg = MqttConfigModel.model_validate({})
     assert cfg.host == "localhost"

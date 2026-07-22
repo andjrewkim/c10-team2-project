@@ -9,6 +9,12 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class Position(BaseModel):
+    x: float
+    y: float
+    z: float
+
+
 class SensorEntry(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -17,6 +23,7 @@ class SensorEntry(BaseModel):
     class_: str = Field(alias="class")
     params: dict[str, Any] = Field(default_factory=dict)
     location: str = ""
+    position: Optional[Position] = None
 
 
 class SensorsConfig(BaseModel):

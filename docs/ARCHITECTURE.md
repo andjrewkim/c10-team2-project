@@ -3,10 +3,16 @@
 ## Data flow
 
 ```
-  ┌──────────┐    ┌───────────┐    ┌─────────────┐    ┌──────────┐
-  │  Sensor  │───▶│ Transport │───▶│   Fusion    │───▶│  Action  │
-  │  (read)  │    │  (MQTT)   │    │  (strategy) │    │ (trigger)│
-  └──────────┘    └───────────┘    └─────────────┘    └──────────┘
+                                        ┌─────────────┐    ┌──────────┐
+                                   ┌───▶│   Fusion    │───▶│  Action  │
+                                   │    │  (strategy) │    │ (trigger)│
+                                   │    └─────────────┘    └──────────┘
+  ┌──────────┐    ┌───────────┐   │
+  │  Sensor  │───▶│ Transport │───┤
+  │  (read)  │    │  (MQTT)   │   │    ┌──────────────────┐
+  └──────────┘    └───────────┘   └───▶│ RecordingSession  │───▶ /data/raw/
+                                        │  (session logger) │
+                                        └──────────────────┘
 ```
 
 1. **Sensor** — calls `read()` on each registered sensor, producing
@@ -17,14 +23,17 @@
    topic per naming convention `{location}/{type}/{id}/observation`.
    The reference transport is MQTT (paho-mqtt).
 
-3. **Fusion** — subscribes to sensor topics (or receives observations
-   in-process), collects a batch, and runs them through a
-   `FusionStrategy`.  The output is a `FusedResult` with an activity
-   label and aggregate confidence.
+3. **Live path (Fusion + Action)** — subscribes to sensor topics,
+   collects a batch, and runs them through a `FusionStrategy`.  The
+   output `FusedResult` is evaluated by `ActionTrigger` instances.
+   This path is optional — if no fusion is configured, sensors can
+   still be recorded.
 
-4. **Action** — passes the fused result through a chain of
-   `ActionTrigger` instances via `evaluate()`.  Each trigger may
-   fire independently (e.g. console log, alert, home automation).
+4. **Recording path** — `RecordingSession` subscribes to all sensor
+   topics (``+/+/+/observation``) and writes every observation raw
+   to a CSV file per session, tagged with label and participant ID.
+   This data is used for offline training of ML fusion models.
+   Multiple recording sessions can run with different sensor subsets.
 
 ## Key design rules
 
@@ -34,6 +43,7 @@
 | Transport | sensors (observations)  | new wrapper     |
 | Fusion    | sensors (observations)  | new strategy    |
 | Action    | fusion (FusedResult)    | new trigger     |
+| Recording | transport (MQTT client) | N/A (standalone)|
 
 - **No cross-layer imports** of concrete implementations.
 - Config files wire everything together at startup.

@@ -31,7 +31,7 @@ python_version = "3.11"
 ignore_missing_imports = true
 
 [tool.setuptools.packages.find]
-include = ["sensors*", "transport*", "fusion*", "actions*", "config*"]
+include = ["sensors*", "transport*", "fusion*", "actions*", "config*", "recording*"]
 
 [tool.ruff]
 target-version = "py311"

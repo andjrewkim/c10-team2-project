@@ -132,6 +132,8 @@ class MqttClient:
                 "observation": observation.observation,
                 "confidence": observation.confidence,
                 "metadata": observation.metadata,
+                "position": observation.position,
+                "tag_id": observation.tag_id,
             },
             default=str,
         )
