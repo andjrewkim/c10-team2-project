@@ -1,0 +1,22 @@
+# sensors.example.yaml
+# -----------------------------------------------------------------------
+# Declare sensor instances the system should manage.
+# Each entry is passed as kwargs to the corresponding sensor class.
+# -----------------------------------------------------------------------
+
+sensors:
+  - id: "mock-001"
+    type: "mock"                  # maps to a sensor class registered in the code
+    class: "sensors.mock_sensor.MockSensor"
+    params:
+      min_confidence: 0.2
+      max_confidence: 0.9
+
+  # Example of what a real sensor entry would look like:
+  # - id: "pir-living-room"
+  #   type: "pir"
+  #   class: "sensors.pir_sensor.PirSensor"
+  #   params:
+  #     pin: 17
+  #     debounce_ms: 200
+  #   location: "living-room"

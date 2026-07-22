@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iot-activity-detection"
+version = "0.1.0"
+description = "Multi-sensor IoT activity-detection framework with pluggable sensors, fusion, and actions."
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "paho-mqtt>=1.6,<3.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "mypy>=1.0",
+    "ruff>=0.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+ignore_missing_imports = true
+
+[tool.setuptools.packages.find]
+include = ["sensors*", "transport*", "fusion*", "actions*", "config*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 99
+select = ["E", "F", "I", "N", "W"]

@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config overrides (user-specific)
+config/*.yaml
+!config/*.example.yaml
+
+# Environment
+.env
+.env.local
+
+# Mypy / pytest
+.mypy_cache/
+.pytest_cache/
+.cache/
+
+# Coverage
+htmlcov/
+.coverage
+coverage/
