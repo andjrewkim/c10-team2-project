@@ -27,9 +27,21 @@ python -m src.train --classifiers random_forest knn svm_rbf
 # 6. Evaluate (confusion matrix → results/figures/)
 python -m src.evaluate
 
-# 7. Live demo
-python -m src.realtime_demo
+# 7. Run real-time demo (classifies mock data)
+python -m src.realtime_demo --mode mock
 ```
+
+## Live Radar Viewer
+
+```bash
+# With mock data (no radar)
+python -m src.live_view --mode mock
+
+# With real mmWave radar
+python -m src.live_view --mode serial
+```
+
+Opens a matplotlib window with 3D point cloud, top-down view, centroid/velocity time series, and point count graph.
 
 ## Pipeline
 
@@ -37,30 +49,39 @@ python -m src.realtime_demo
 collect → visualize → combine_datasets → extract_features → train → evaluate → realtime_demo
 ```
 
-| Step | Output |
-|------|--------|
-| `collect.py` | `data/raw/*.jsonl` |
-| `visualize.py` | Plot window with centroid/velocity/motion traces |
-| `combine_datasets.py` | `data/processed/combined_dataset.json` |
-| `extract_features.py` | `data/processed/features.npz` |
-| `train.py` | `models/*.pkl`, `models/train_results.json` |
-| `evaluate.py` | `results/evaluation_results.json`, `results/figures/*.png` |
-| `realtime_demo.py` | Live terminal predictions |
+| Script | What it does | Output |
+|--------|-------------|--------|
+| `live_view.py` | Live radar visualization | Plot window |
+| `collect.py` | Record labelled gesture trials | `data/raw/*.jsonl` |
+| `visualize.py` | Plot recorded data for inspection | Plot window |
+| `combine_datasets.py` | Merge recordings into one dataset | `data/processed/combined_dataset.json` |
+| `extract_features.py` | Sliding-window feature extraction | `data/processed/features.npz` |
+| `train.py` | Train and compare classifiers | `models/*.pkl`, `models/train_results.json` |
+| `evaluate.py` | Accuracy, confusion matrix, plots | `results/evaluation_results.json`, `results/figures/*.png` |
+| `realtime_demo.py` | Live terminal classification | Terminal predictions |
 
 ## With Real Sensors
 
 ```bash
+# Collect gesture data from mmWave radar
 python -m src.collect \
-    --sensors mmwave imu \
+    --sensors mmwave \
     --mode serial \
     --gestures push pull clockwise anticlockwise \
     --duration 6 --trials 5
+
+# Collect from multiple sensors (fusion)
+python -m src.collect \
+    --sensors mmwave imu \
+    --mode serial \
+    --gestures push pull \
+    --duration 5 --trials 5
 ```
 
 ## Sensor Fusion
 
 Use `--sensors mmwave imu` (or any combination) to capture multiple modalities.
-The feature extractator automatically concatenates features from all present
+The feature extractor automatically concatenates features from all present
 sensors. Train single-sensor baselines separately, then compare against
 the fused model.
 
@@ -74,12 +95,14 @@ the fused model.
 
 ```
 src/
-├── collect.py
-├── combine_datasets.py
-├── extract_features.py
-├── train.py
-├── evaluate.py
-├── realtime_demo.py
+├── live_view.py            # Live radar visualization
+├── collect.py              # Gesture data collection
+├── combine_datasets.py     # Merge recordings
+├── extract_features.py     # Feature engineering
+├── train.py                # Model training
+├── evaluate.py             # Evaluation + confusion matrix
+├── realtime_demo.py        # Live classification
+├── visualize.py            # Plot recorded data
 └── sensors/
     ├── base_reader.py      # Abstract reader
     ├── mmwave_reader.py    # mmWave radar
@@ -87,14 +110,17 @@ src/
     ├── uwb_reader.py       # UWB ranging
     ├── wifi_reader.py      # WiFi RSSI/CSI
     ├── rfid_reader.py      # RFID
-    ├── drivers/            # Hardware drivers
-    └── lab_integration/    # Signal processing
+    ├── mock_sensor.py      # Mock sensor for testing
+    ├── reader_pool.py      # Background reader pool
+    ├── base.py             # Base sensor ABC
+    ├── drivers/            # Hardware drivers (serial/mock)
+    └── lab_integration/    # COSMOS signal processing
 data/
 ├── raw/                    # Recordings (.jsonl)
-└── processed/              # Features (.npz)
+└── processed/              # Feature matrices (.npz)
 models/                     # Trained models (.pkl)
 results/figures/            # Confusion matrices (.png)
-config/                     # Radar config (.cfg)
+config/                     # Radar CFG + sensor YAML
 ```
 
 ## Requirements
