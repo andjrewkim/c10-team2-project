@@ -24,7 +24,7 @@ ALL_GESTURES = [
     "pull", "push", "clockwise", "anticlockwise",
     "right", "left", "bye-bye", "one-arm-boxing",
     "clapping", "two-arm-boxing", "t-arm",
-    "raise-arms", "soli", "making-fist-and-open",
+    "raise-arms", "soli", "making-fist-open",
     "palm-up-down",
 ]
 
