@@ -311,8 +311,11 @@ class MmWaveRadarSensor(BaseSensor):
         elif n > 0 and self._bg_subtractor is not None:
             ranges = np.sqrt(cloud.x**2 + cloud.y**2)
             if len(ranges):
-                mp = self._bg_subtractor.update(ranges)
-                motion_score = float(np.mean(np.abs(mp)))
+                try:
+                    mp = self._bg_subtractor.update(ranges)
+                    motion_score = float(np.mean(np.abs(mp)))
+                except ValueError:
+                    pass
 
         log_this = (self._frame_count % _LOG_INTERVAL) == 0
         if log_this:

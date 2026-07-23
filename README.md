@@ -11,31 +11,36 @@ python -m src.collect \
     --gestures push pull left right \
     --duration 3 --trials 3
 
-# 2. Merge recordings
+# 2. Inspect the data (plots centroid, velocity, point count)
+python -m src.visualize --mode mmwave
+python -m src.visualize --mode overlay --field mean_y
+
+# 3. Merge recordings
 python -m src.combine_datasets
 
-# 3. Extract features
+# 4. Extract features
 python -m src.extract_features --window 5 --stride 3
 
-# 4. Train classifiers
+# 5. Train classifiers
 python -m src.train --classifiers random_forest knn svm_rbf
 
-# 5. Evaluate (confusion matrix → results/figures/)
+# 6. Evaluate (confusion matrix → results/figures/)
 python -m src.evaluate
 
-# 6. Live demo
+# 7. Live demo
 python -m src.realtime_demo
 ```
 
 ## Pipeline
 
 ```
-collect → combine_datasets → extract_features → train → evaluate → realtime_demo
+collect → visualize → combine_datasets → extract_features → train → evaluate → realtime_demo
 ```
 
 | Step | Output |
 |------|--------|
 | `collect.py` | `data/raw/*.jsonl` |
+| `visualize.py` | Plot window with centroid/velocity/motion traces |
 | `combine_datasets.py` | `data/processed/combined_dataset.json` |
 | `extract_features.py` | `data/processed/features.npz` |
 | `train.py` | `models/*.pkl`, `models/train_results.json` |
