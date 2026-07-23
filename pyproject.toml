@@ -25,10 +25,20 @@ serial = [
 viz = [
     "matplotlib>=3.7",
 ]
+gui = [
+    "pyqtgraph>=0.13",
+    "PyQt6>=6.5",
+]
+ml = [
+    "joblib>=1.3",
+    "scikit-learn>=1.3",
+]
 all = [
     "pyserial>=3.5",
     "matplotlib>=3.7",
     "seaborn>=0.12",
+    "pyqtgraph>=0.13",
+    "joblib>=1.3",
 ]
 
 [tool.setuptools.packages.find]

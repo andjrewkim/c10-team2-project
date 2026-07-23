@@ -1,11 +1,8 @@
-"""Signal-processing and data-parsing utilities extracted from the COSMOS lab
-repository (``mmwave/`` folder of this project).
+"""Signal-processing and data-parsing utilities for sensor drivers.
 
-Each submodule wraps one sensor's lab implementations so the production
-drivers in ``sensors/drivers/`` can use real parsing and algorithms instead
-of stub mock values.  The original lab scripts live in ``mmwave/labs/`` for
-reference; this package provides the clean, reusable, project-integrated
-versions of their key functions.
+Each submodule wraps one sensor's signal-processing algorithms so the
+production drivers in ``sensors/drivers/`` can use real parsing and
+algorithms instead of stub mock values.
 
 Module layout
 -------------

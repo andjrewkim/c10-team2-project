@@ -8,8 +8,7 @@ Supports two modes:
   trajectory integrator.
 
 The serial parsing + trajectory math lives in
-``sensors/lab_integration.imu`` and was ported from the COSMOS
-``lab04-imu-lab`` tools.
+``sensors/lab_integration.imu``.
 """
 
 from __future__ import annotations

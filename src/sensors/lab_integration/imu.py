@@ -1,14 +1,14 @@
-"""IMU (inertial measurement unit) utilities extracted from
-``mmwave/labs/lab04-imu-lab/IMU_lab_students/tools/``.
+"""IMU (inertial measurement unit) utilities.
 
 Provides BMI270 serial line parsing, quaternion math for orientation
-tracking, and a dead-reckoned trajectory integrator — the same algorithms
-used in the student lab for ``capture_trajectory.py``.
+tracking, a dead-reckoned trajectory integrator, and a streaming
+moving-average filter.
 """
 
 from __future__ import annotations
 
 import re
+from collections import deque
 from typing import Optional
 
 import numpy as np
@@ -228,6 +228,69 @@ def compute_trajectory(
     }
 
 
+# ---------------------------------------------------------------------------
+# Moving-average smoothing
+# ---------------------------------------------------------------------------
+
+
+class MovingAverageFilter:
+    """Streaming moving average over a fixed-size window.
+
+    Parameters
+    ----------
+    window_size : int
+        Number of samples to average over.
+    """
+
+    def __init__(self, window_size: int) -> None:
+        self.window_size = window_size
+        self.window: deque[float] = deque(maxlen=window_size)
+        self.running_sum = 0.0
+
+    def update(self, new_value: float) -> float:
+        if len(self.window) == self.window_size:
+            self.running_sum -= self.window[0]
+        self.window.append(new_value)
+        self.running_sum += new_value
+        return self.running_sum / len(self.window)
+
+
+def smooth_samples(
+    samples: list[tuple[float, ...]],
+    window_size: int,
+    num_channels: int = 6,
+) -> list[tuple[float, ...]]:
+    """Apply a moving-average filter to each channel of a sample list.
+
+    Parameters
+    ----------
+    samples : list of tuple
+        Each tuple is ``(timestamp, ch0, ch1, ..., chN)``.
+    window_size : int
+        Number of samples to average over (1 = no smoothing).
+    num_channels : int
+        Number of value channels after the timestamp.
+
+    Returns
+    -------
+    list of tuple
+        Smoothed samples with the same structure.
+    """
+    if window_size <= 1:
+        return list(samples)
+
+    filters = [MovingAverageFilter(window_size) for _ in range(num_channels)]
+    smoothed: list[tuple[float, ...]] = []
+    for sample in samples:
+        ts = sample[0]
+        values = sample[1:]
+        smoothed_values = tuple(
+            filters[i].update(float(values[i])) for i in range(num_channels)
+        )
+        smoothed.append((ts, *smoothed_values))
+    return smoothed
+
+
 __all__ = [
     "G_MPS2",
     "IMU_SAMPLE_PATTERN",
@@ -239,4 +302,6 @@ __all__ = [
     "quat_from_angular_velocity",
     "quat_rotate",
     "compute_trajectory",
+    "MovingAverageFilter",
+    "smooth_samples",
 ]
