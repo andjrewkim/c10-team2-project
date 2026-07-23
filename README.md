@@ -1,114 +1,103 @@
-# IoT Activity Detection
+# Gesture Recognition System
 
-Multi-sensor activity-detection system with ML fusion — a university
-semester project demonstrating a complete pipeline from raw sensor
-data to activity prediction.
+Collect labelled gesture data from mmWave radar / IMU / UWB / WiFi / RFID,
+extract sliding-window features, train classifiers, and run real-time inference.
 
-## What it does
-
-Sensors (IMU, UWB, mmWave radar, RFID, WiFi) publish observations
-over MQTT. The system can:
-
-1. **Record** labelled sessions to disk (`recording/cli.py`).
-2. **Train** an ML fusion model from those recordings (`training/`).
-3. **Run live**: fuse sensor streams into an activity prediction
-   and trigger actions (`run_demo.py`).
-
-## Architecture
-
-```ascii
-Sensor ──▶ MQTT ──▶ RecordingSession ──▶ CSV on disk
-(read)     bus                               │
-                                             ▼
-                                     training/prepare_dataset.py
-                                             │
-                                             ▼
-                                     training/train_fusion_model.py
-                                             │
-                                             ▼
-                                     fusion/model.pkl
-                                             │
-                      ┌──────────────────────┘
-                      ▼
-Live: sensor ──▶ MlFusion ──▶ Action
-                (or WeightedAverage fallback)
-```
-
-## Quickstart (mock pipeline, no hardware)
+## Quick Start (mock mode — no hardware)
 
 ```bash
-pip install -e ".[dev]"
-python run_demo.py
+# 1. Collect synthetic gesture data
+python -m src.collect \
+    --gestures push pull left right \
+    --duration 3 --trials 3
+
+# 2. Merge recordings
+python -m src.combine_datasets
+
+# 3. Extract features
+python -m src.extract_features --window 5 --stride 3
+
+# 4. Train classifiers
+python -m src.train --classifiers random_forest knn svm_rbf
+
+# 5. Evaluate (confusion matrix → results/figures/)
+python -m src.evaluate
+
+# 6. Live demo
+python -m src.realtime_demo
 ```
 
-This runs a mock sensor → weighted-average fusion → console action.
-No MQTT broker, no sensors needed.
+## Pipeline
 
-## Full pipeline (real hardware)
+```
+collect → combine_datasets → extract_features → train → evaluate → realtime_demo
+```
+
+| Step | Output |
+|------|--------|
+| `collect.py` | `data/raw/*.jsonl` |
+| `combine_datasets.py` | `data/processed/combined_dataset.json` |
+| `extract_features.py` | `data/processed/features.npz` |
+| `train.py` | `models/*.pkl`, `models/train_results.json` |
+| `evaluate.py` | `results/evaluation_results.json`, `results/figures/*.png` |
+| `realtime_demo.py` | Live terminal predictions |
+
+## With Real Sensors
 
 ```bash
-# 1. Record sessions (requires MQTT broker + sensors)
-python -m recording.cli --label "walking" --participant alice --duration 30
-python -m recording.cli --label "sitting" --participant alice --duration 30
-
-# 2. Prepare feature matrix for ML
-pip install -e ".[train]"
-python -m training.prepare_dataset --data-dir data/raw --output-dir data/processed
-
-# 3. Train and compare models
-python -m training.train_fusion_model --dataset data/processed/dataset.npz --output fusion/model.pkl
-
-# 4. Run live with the trained model
-python run_demo.py
+python -m src.collect \
+    --sensors mmwave imu \
+    --mode serial \
+    --gestures push pull clockwise anticlockwise \
+    --duration 6 --trials 5
 ```
 
-After training, `run_demo.py` automatically loads `fusion/model.pkl`
-via `MlFusion`. If no model file exists, it falls back to
-`WeightedAverageFusion`.
+## Sensor Fusion
 
-## Live UI — Sensor Monitoring
+Use `--sensors mmwave imu` (or any combination) to capture multiple modalities.
+The feature extractator automatically concatenates features from all present
+sensors. Train single-sensor baselines separately, then compare against
+the fused model.
 
-```bash
-pip install -e ".[ui]"
-uvicorn ui.server:app --host 0.0.0.0 --port 8000
+## Gestures
+
+`pull`, `push`, `clockwise`, `anticlockwise`, `right`, `left`, `bye-bye`,
+`one-arm-boxing`, `clapping`, `two-arm-boxing`, `t-arm`, `raise-arms`,
+`soli`, `making-fist-and-open`, `palm-up-down`
+
+## Structure
+
+```
+src/
+├── collect.py
+├── combine_datasets.py
+├── extract_features.py
+├── train.py
+├── evaluate.py
+├── realtime_demo.py
+└── sensors/
+    ├── base_reader.py      # Abstract reader
+    ├── mmwave_reader.py    # mmWave radar
+    ├── imu_reader.py       # IMU
+    ├── uwb_reader.py       # UWB ranging
+    ├── wifi_reader.py      # WiFi RSSI/CSI
+    ├── rfid_reader.py      # RFID
+    ├── drivers/            # Hardware drivers
+    └── lab_integration/    # Signal processing
+data/
+├── raw/                    # Recordings (.jsonl)
+└── processed/              # Features (.npz)
+models/                     # Trained models (.pkl)
+results/figures/            # Confusion matrices (.png)
+config/                     # Radar config (.cfg)
 ```
 
-Open http://localhost:8000/ for a web dashboard with live sensor
-cards and recording controls.
+## Requirements
 
-## Live UI — Localization Dashboard
-
-Shows a floor-plan heatmap of the estimated person position in the
-room, combining UWB trilateration with RFID, mmWave, WiFi, and IMU
-belief adjustments. Sensor poller threads and the localisation engine
-are shared via ``src/reader_pool.py`` and ``src/localization.py``:
-
-```bash
-pip install -e ".[ui]"
-uvicorn src.dashboard.server:app --host 0.0.0.0 --port 8001
+```
+pip install -e .
 ```
 
-Open http://localhost:8001/ for a live floor-plan view with heatmap
-overlay, position marker, and connected-sensor list.
-
-## Project structure
-
-| Directory         | Purpose                                              |
-|-------------------|------------------------------------------------------|
-| `sensors/`        | Base sensor + drivers (IMU, UWB, mmWave, RFID, WiFi) |
-| `transport/`      | MQTT client wrapper                                  |
-| `fusion/`         | Fusion strategies (WeightedAverage, MlFusion)        |
-| `actions/`        | Action triggers (ConsoleAction)                      |
-| `recording/`      | Labelled session capture → CSV                       |
-| `training/`       | Dataset preparation + ML model training              |
-| `ui/`             | FastAPI sensor-control dashboard                     |
-| `src/`            | Shared reader pool, localisation engine, live dashboard |
-| `config/`         | YAML config files (including localization.example.yaml) |
-| `tests/`          | pytest suite                                         |
-
-## Evaluation (for grading)
-
-The ML fusion module (`fusion/ml_fusion.py`) compares logistic
-regression, k-nearest neighbours, and a small MLP on real recorded
-data, selecting the best model by test accuracy. The training script
-prints accuracy + confusion matrix for each. See `training/README.md`.
+For serial sensors: `pip install -e ".[serial]"`
+For plots: `pip install -e ".[viz]"`
+For everything: `pip install -e ".[all]"`

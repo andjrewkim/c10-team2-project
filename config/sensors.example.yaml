@@ -85,3 +85,92 @@ sensors:
     params:
       interface: "wlan1"
       mode: "rssi"
+# config/sensors.example.yaml
+# -----------------------------------------------------------------------
+# Declare sensor instances the system should manage.
+# Each entry is passed as kwargs to the corresponding sensor class.
+# -----------------------------------------------------------------------
+
+sensors:
+  # ---------- Mock (for testing the pipeline) ----------
+  - id: "mock-001"
+    type: "mock"
+    class: "sensors.mock_sensor.MockSensor"
+    params:
+      min_confidence: 0.2
+      max_confidence: 0.9
+
+  # ---------- IMU (I2C accelerometer + gyroscope) ----------
+  - id: "imu-waist"
+    type: "imu"
+    class: "sensors.drivers.imu.ImuSensor"
+    params:
+      i2c_bus: 1
+      i2c_address: "0x28"           # BNO055 default
+
+  # ---------- UWB anchor 1 of 3 (time-of-flight ranging) ----------
+  - id: "uwb-anchor-1"
+    type: "uwb"
+    class: "sensors.drivers.uwb.UwbAnchorSensor"
+    params:
+      serial_port: "/dev/ttyACM0"
+      baudrate: 115200
+      position:                      # fixed known location (metres)
+        x: 0.0
+        y: 0.0
+        z: 2.5
+  - id: "uwb-anchor-2"
+    type: "uwb"
+    class: "sensors.drivers.uwb.UwbAnchorSensor"
+    params:
+      serial_port: "/dev/ttyACM1"
+      baudrate: 115200
+      position:
+        x: 5.0
+        y: 0.0
+        z: 2.5
+  - id: "uwb-anchor-3"
+    type: "uwb"
+    class: "sensors.drivers.uwb.UwbAnchorSensor"
+    params:
+      serial_port: "/dev/ttyACM2"
+      baudrate: 115200
+      position:
+        x: 2.5
+        y: 4.0
+        z: 2.5
+
+  # ---------- mmWave radar (TI IWRL6432, 60GHz FT232R USB-to-UART) ----------
+  - id: "radar-main"
+    type: "mmwave"
+    class: "sensors.drivers.mmwave.IWRL6432Driver"
+    params:
+      serial_port: "/dev/cu.usbserial-BH00LUQT"  
+      baudrate: 115200                            # Preflashed demo UART baudrate
+      cfg_path: "config/xwrL64xx-evm/point_cloud.cfg"
+      alpha: 0.01                                 # Moving target background factor
+      min_range: 0.15                             # Metres
+      max_range: 2.0                              # Metres
+
+  # ---------- RFID reader (UHF, one reader reads many tags) ----------
+  - id: "rfid-gate-1"
+    type: "rfid"
+    class: "sensors.drivers.rfid.RfidReaderSensor"
+    params:
+      host: "192.168.1.100"
+      port: 5084
+      read_power: 30
+
+  # ---------- WiFi RSSI/CSI monitor ----------
+  - id: "wifi-monitor-1"
+    type: "wifi"
+    class: "sensors.drivers.wifi.WiFiSensor"
+    params:
+      interface: "wlan0"
+      mode: "rssi"
+  - id: "wifi-monitor-2"
+    type: "wifi"
+    class: "sensors.drivers.wifi.WiFiSensor"
+    params:
+      interface: "wlan1"
+      mode: "rssi"
