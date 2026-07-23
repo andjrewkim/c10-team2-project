@@ -38,8 +38,16 @@ class ImuReader(BaseReader):
             sensor_type=self.sensor_type,
             timestamp=obs.timestamp,
             data={
-                "accel": o.get("accel", [0, 0, 0]),
-                "gyro": o.get("gyro", [0, 0, 0]),
+                "accel": [
+                    o.get("accel_x", 0),
+                    o.get("accel_y", 0),
+                    o.get("accel_z", 0),
+                ],
+                "gyro": [
+                    o.get("gyro_x", 0),
+                    o.get("gyro_y", 0),
+                    o.get("gyro_z", 0),
+                ],
                 "quat": o.get("quat"),
                 "trajectory": o.get("trajectory"),
             },
