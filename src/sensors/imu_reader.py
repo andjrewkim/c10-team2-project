@@ -46,5 +46,11 @@ class ImuReader(BaseReader):
             confidence=obs.confidence,
         )
 
+    def zero(self, num_samples: int = 50) -> dict[str, tuple[float, float, float]]:
+        return self._sensor.zero(num_samples=num_samples)
+
+    def reset_bias(self) -> None:
+        self._sensor.reset_bias()
+
     def stop(self) -> None:
         self._started = False

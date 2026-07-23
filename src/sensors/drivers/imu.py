@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import time
 from datetime import datetime, timezone
 
 from src.sensors.base import BaseSensor, SensorObservation
@@ -54,6 +55,8 @@ class ImuSensor(BaseSensor):
         self.i2c_bus = i2c_bus
         self.i2c_address = i2c_address
         self.baudrate = baudrate
+        self._gyro_bias: tuple[float, float, float] | None = None
+        self._accel_bias: tuple[float, float, float] | None = None
 
     def read(self) -> list[SensorObservation]:
         if self.mode == "serial":
@@ -61,10 +64,95 @@ class ImuSensor(BaseSensor):
         return self._read_mock()
 
     # ------------------------------------------------------------------
+    # Bias calibration (zeroing)
+    # ------------------------------------------------------------------
+
+    def zero(self, num_samples: int = 50) -> dict[str, tuple[float, float, float]]:
+        """Calibrate sensor biases by sampling while stationary.
+
+        Collects *num_samples* readings (must be stationary), computes the
+        mean gyroscope and accelerometer values, and stores them as bias
+        offsets.  Subsequent ``read()`` calls subtract these offsets.
+
+        Returns
+        -------
+        dict with keys ``"gyro_bias"`` and ``"accel_bias"`` (each ``(x, y, z)``).
+        """
+        samples: list[dict[str, float]] = []
+        print(f"  Keeping IMU stationary, sampling {num_samples} readings...")
+        for i in range(num_samples):
+            obs_list = self.read_raw()
+            if obs_list:
+                obs = obs_list[0].observation or {}
+                samples.append(obs)
+            time.sleep(0.01)
+
+        if not samples:
+            print("  Warning: no samples collected, bias unchanged")
+            return {"gyro_bias": self._gyro_bias, "accel_bias": self._accel_bias}
+
+        gyro_x = [s.get("gyro_x", 0) for s in samples]
+        gyro_y = [s.get("gyro_y", 0) for s in samples]
+        gyro_z = [s.get("gyro_z", 0) for s in samples]
+        accel_x = [s.get("accel_x", 0) for s in samples]
+        accel_y = [s.get("accel_y", 0) for s in samples]
+        accel_z = [s.get("accel_z", 0) for s in samples]
+
+        import statistics
+        self._gyro_bias = (
+            statistics.mean(gyro_x),
+            statistics.mean(gyro_y),
+            statistics.mean(gyro_z),
+        )
+        self._accel_bias = (
+            statistics.mean(accel_x),
+            statistics.mean(accel_y),
+            statistics.mean(accel_z),
+        )
+        print(f"  Gyro bias set to:  x={self._gyro_bias[0]:.4f}  y={self._gyro_bias[1]:.4f}  z={self._gyro_bias[2]:.4f} dps")
+        print(f"  Accel bias set to: x={self._accel_bias[0]:.4f}  y={self._accel_bias[1]:.4f}  z={self._accel_bias[2]:.4f} g")
+        return {"gyro_bias": self._gyro_bias, "accel_bias": self._accel_bias}
+
+    def reset_bias(self) -> None:
+        """Clear stored bias offsets."""
+        self._gyro_bias = None
+        self._accel_bias = None
+        print("  Bias offsets cleared")
+
+    def read_raw(self) -> list[SensorObservation]:
+        """Read without applying bias correction (used internally by ``zero()``)."""
+        if self.mode == "serial":
+            return self._read_serial_raw()
+        return self._read_mock_raw()
+
+    # ------------------------------------------------------------------
     # Mock mode
     # ------------------------------------------------------------------
 
     def _read_mock(self) -> list[SensorObservation]:
+        raw = self._read_mock_raw()
+        return [self._apply_bias(obs) for obs in raw]
+
+    def _apply_bias(self, obs: SensorObservation) -> SensorObservation:
+        if self._gyro_bias is None and self._accel_bias is None:
+            return obs
+        o = dict(obs.observation or {})
+        if self._gyro_bias is not None:
+            o["gyro_x"] = o.get("gyro_x", 0) - self._gyro_bias[0]
+            o["gyro_y"] = o.get("gyro_y", 0) - self._gyro_bias[1]
+            o["gyro_z"] = o.get("gyro_z", 0) - self._gyro_bias[2]
+        if self._accel_bias is not None:
+            o["accel_x"] = o.get("accel_x", 0) - self._accel_bias[0]
+            o["accel_y"] = o.get("accel_y", 0) - self._accel_bias[1]
+            o["accel_z"] = o.get("accel_z", 0) - self._accel_bias[2]
+        return SensorObservation(
+            sensor_id=obs.sensor_id, sensor_type=obs.sensor_type,
+            timestamp=obs.timestamp, observation=o,
+            confidence=obs.confidence, metadata=obs.metadata,
+            position=obs.position, tag_id=obs.tag_id,
+        )
+
+    def _read_mock_raw(self) -> list[SensorObservation]:
         obs = {
             "accel_x": random.uniform(-2.0, 2.0),
             "accel_y": random.uniform(-2.0, 2.0),
@@ -90,18 +178,21 @@ class ImuSensor(BaseSensor):
     # ------------------------------------------------------------------
 
     def _read_serial(self) -> list[SensorObservation]:
+        return [self._apply_bias(obs) for obs in self._read_serial_raw()]
+
+    def _read_serial_raw(self) -> list[SensorObservation]:
         if self.serial_port is None:
-            return self._read_mock()
+            return self._read_mock_raw()
 
         try:
             from sensors.lab_integration.imu import parse_imu_line
         except ImportError:
-            return self._read_mock()
+            return self._read_mock_raw()
 
         try:
             import serial as pyserial
         except ImportError:
-            return self._read_mock()
+            return self._read_mock_raw()
 
         observations: list[SensorObservation] = []
         try:
@@ -138,7 +229,7 @@ class ImuSensor(BaseSensor):
                 )
             ser.close()
         except Exception:
-            return self._read_mock()
+            return self._read_mock_raw()
         return observations
 
 
@@ -146,15 +237,40 @@ __all__ = ["ImuSensor"]
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="IMU sensor self-test")
+    parser = argparse.ArgumentParser(description="IMU sensor self-test & calibration")
     parser.add_argument("--mode", choices=["mock", "serial"], default="mock")
     parser.add_argument("--serial-port")
     parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--zero", action="store_true",
+                        help="Calibrate gyro/accel bias (keep stationary)")
+    parser.add_argument("--reset-bias", action="store_true",
+                        help="Clear stored bias offsets")
+    parser.add_argument("--num-samples", type=int, default=50,
+                        help="Number of samples for calibration (default 50)")
     args = parser.parse_args()
     sensor = ImuSensor(sensor_id="imu-self-test", mode=args.mode,
                        serial_port=args.serial_port, baudrate=args.baud)
+
+    if args.reset_bias:
+        sensor.reset_bias()
+
+    if args.zero:
+        sensor.zero(num_samples=args.num_samples)
+
+    print(f"Reading from {sensor.sensor_id} ({args.mode})")
+    if args.zero or args.reset_bias:
+        print("  Gyro bias:" + (
+            f" ({sensor._gyro_bias[0]:.4f}, {sensor._gyro_bias[1]:.4f}, {sensor._gyro_bias[2]:.4f})"
+            if sensor._gyro_bias else " None"
+        ))
+        print("  Accel bias:" + (
+            f" ({sensor._accel_bias[0]:.4f}, {sensor._accel_bias[1]:.4f}, {sensor._accel_bias[2]:.4f})"
+            if sensor._accel_bias else " None"
+        ))
     for o in sensor.read():
         obs = o.observation
         print(f"[{o.timestamp.isoformat()}] {o.sensor_type}/{o.sensor_id}  "
               f"accel=({obs.get('accel_x', 0):.3f}, {obs.get('accel_y', 0):.3f}, "
-              f"{obs.get('accel_z', 0):.3f}) g  conf={o.confidence}")
+              f"{obs.get('accel_z', 0):.3f}) g  "
+              f"gyro=({obs.get('gyro_x', 0):.3f}, {obs.get('gyro_y', 0):.3f}, "
+              f"{obs.get('gyro_z', 0):.3f}) dps  conf={o.confidence}")
