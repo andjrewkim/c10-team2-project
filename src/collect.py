@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import csv
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+import numpy as np
+import serial
 
 from src.sensors.imu_reader import ImuReader
 from src.sensors.mmwave_reader import MmWaveReader
@@ -44,12 +48,13 @@ def collect_gesture(
 
     interval = 1.0 / max(fps, 1)
     frames: list[dict] = []
-    start_time = time.monotonic()
-    deadline = start_time + duration_s
 
     print(f"  Recording '{gesture}' trial {trial} for {duration_s}s...")
     if gesture != "none" and prompt:
         input(f"  Press Enter when ready to perform '{gesture}'...")
+
+    start_time = time.monotonic()
+    deadline = start_time + duration_s
 
     while time.monotonic() < deadline:
         frame: dict[str, any] = {
@@ -100,6 +105,8 @@ def main() -> None:
     parser.add_argument("--mode", default="mock",
                         choices=["mock", "serial"],
                         help="Sensor mode")
+    parser.add_argument("--imu_port", default="com13", help="IMU serial port")
+    parser.add_argument("--mmwave_port", default="com12", help="mmWave serial port")
     parser.add_argument("--no-prompt", action="store_true",
                         help="Skip 'press enter' prompts (for automation)")
     args = parser.parse_args()
