@@ -10,7 +10,7 @@ from typing import Any
 
 from src.sensors.base_reader import Reading
 from src.sensors.imu_reader import ImuReader
-from src.sensors.mmwave_reader import MmWaveReader
+from src.sensors.mmWave.mmwave_reader import MmWaveReader
 from src.sensors.rfid_reader import RfidReader
 from src.sensors.uwb_reader import UwbReader
 from src.sensors.wifi_reader import WiFiReader

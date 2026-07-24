@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from src.sensors.lab_integration.mmwave import (
+from src.sensors.mmWave.lab_mmwave import (
     RANGE_PROFILE_MAJOR,
     RANGE_PROFILE_MINOR,
     db_scale,
@@ -27,7 +27,7 @@ from src.sensors.lab_integration.mmwave import (
     resample_vector,
     robust_normalize,
 )
-from src.sensors.lab_integration.mmwave import point_cloud_from_tlvs, read_frame
+from src.sensors.mmWave.lab_mmwave import point_cloud_from_tlvs, read_frame
 
 
 INPUT_TYPE = "mmwave_box_contents_2d"

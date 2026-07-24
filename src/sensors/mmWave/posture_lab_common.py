@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from src.sensors.lab_integration.mmwave import fill_nan_series, resample_vector
+from src.sensors.mmWave.lab_mmwave import fill_nan_series, resample_vector
 
 INPUT_TYPE = "mmwave_posture_point_cloud_2d"
 STAT_NAMES = ("mean", "std", "min", "max", "p10", "p50", "p90", "start", "end", "delta", "slope")

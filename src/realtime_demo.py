@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from src.sensors.imu_reader import ImuReader
-from src.sensors.mmwave_reader import MmWaveReader
+from src.sensors.mmWave.mmwave_reader import MmWaveReader
 
 SENSOR_REGISTRY = {
     "mmwave": MmWaveReader,
