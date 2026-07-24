@@ -6,7 +6,7 @@ Ported from the COSMOS ``posture_lab_common.py`` lab module.
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 
