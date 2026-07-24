@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+# Make `from src.*` imports resolve no matter how the script is launched:
+# `python src/live_view.py` from the project root, `python -m src.live_view`,
+# or `cd src && python live_view.py` should all just work — without requiring
+# the user to remember to set PYTHONPATH or `cd` to the right directory.
+import sys
+from pathlib import Path
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import argparse
 import time
 from collections import deque

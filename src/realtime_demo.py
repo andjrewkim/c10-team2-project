@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+# Make `from src.*` imports resolve no matter how the script is launched:
+# `python src/realtime_demo.py` from the project root, `python -m src.realtime_demo`,
+# or `cd src && python realtime_demo.py` should all just work — without requiring
+# the user to remember to set PYTHONPATH or `cd` to the right directory.
+import sys
+from pathlib import Path
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import argparse
 import pickle
 import time
