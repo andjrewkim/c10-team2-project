@@ -222,6 +222,11 @@ def main() -> None:
                 )
                 trial_end_ts = datetime.now(timezone.utc).isoformat()
 
+                keep = input(f"  Keep this '{gesture}' trial {trial_num} ({len(frames)} frames)? (y/n): ").strip().lower()
+                if keep != "y":
+                    print(f"  Discarded trial")
+                    continue
+
                 for f in frames:
                     events_writer.writerow({
                         "frame_index": f["_frame_index"],
