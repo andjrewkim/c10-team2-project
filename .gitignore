@@ -28,9 +28,10 @@ config/*.yaml
 .env
 .env.local
 
-# Mypy / pytest
+# Mypy / pytest / ruff
 .mypy_cache/
 .pytest_cache/
+.ruff_cache/
 .cache/
 
 # Coverage
@@ -38,6 +39,23 @@ htmlcov/
 .coverage
 coverage/
 
-# Recorded data (never commit raw sensor recordings)
-/data/raw/*.csv
-/data/raw/*.parquet
+# Raw sensor recordings (large, generated)
+/data/raw/*.jsonl
+/data/raw/manifest.json
+
+# Processed datasets (regeneratable)
+/data/processed/*.npz
+/data/processed/*.json
+
+# Trained models (regeneratable)
+/models/*.pkl
+/models/*.json
+
+# Evaluation results (regeneratable)
+/results/*.json
+/results/figures/*.png
+
+# Keep gitkeep files
+!**/.gitkeep
+
+/.freebuff
