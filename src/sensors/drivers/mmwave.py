@@ -132,7 +132,7 @@ class MmWaveRadarSensor(BaseSensor):
         if self.mode != "serial":
             return
 
-        from src.sensors.lab_integration.mmwave import configure_radar, ExponentialBackgroundSubtractor
+        from src.sensors.mmWave.lab_mmwave import configure_radar, ExponentialBackgroundSubtractor
         import serial as pyserial
 
         with self._lock:
@@ -155,7 +155,7 @@ class MmWaveRadarSensor(BaseSensor):
                     raise
             else:
                 # Minimal config
-                from src.sensors.lab_integration.mmwave import write_cli_command
+                from src.sensors.mmWave.lab_mmwave import write_cli_command
                 write_cli_command(self._port, "sensorStop 0")
                 time.sleep(0.1)
                 self._port.reset_input_buffer()
@@ -185,7 +185,7 @@ class MmWaveRadarSensor(BaseSensor):
         with self._lock:
             if self._port is not None:
                 try:
-                    from src.sensors.lab_integration.mmwave import write_cli_command
+                    from src.sensors.mmWave.lab_mmwave import write_cli_command
                     write_cli_command(self._port, "sensorStop 0")
                     time.sleep(0.05)
                 except Exception:
@@ -240,7 +240,7 @@ class MmWaveRadarSensor(BaseSensor):
     # ------------------------------------------------------------------
 
     def _read_serial(self) -> list[SensorObservation]:
-        from src.sensors.lab_integration.mmwave import (
+        from src.sensors.mmWave.lab_mmwave import (
             point_cloud_from_tlvs,
             range_profile_from_tlvs,
             read_frame,
