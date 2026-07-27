@@ -1,0 +1,14 @@
+{
+  "label_to_int": {
+    "left": 0,
+    "pull": 1,
+    "push": 2,
+    "right": 3
+  },
+  "int_to_label": {
+    "0": "left",
+    "1": "pull",
+    "2": "push",
+    "3": "right"
+  }
+}

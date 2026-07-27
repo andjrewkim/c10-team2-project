@@ -8,10 +8,15 @@ from pathlib import Path
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 CLASSIFIERS = {
     "random_forest": RandomForestClassifier(
@@ -25,20 +30,33 @@ CLASSIFIERS = {
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train gesture classification models")
-    parser.add_argument("--input", default="data/processed/features.npz",
-                        help="Input feature matrix NPZ")
+    parser.add_argument("--input", default=None,
+                        help="Input feature NPZ file (default: latest features_*.npz in data/processed)")
     parser.add_argument("--output", default="models",
                         help="Output directory for trained models")
+    parser.add_argument("--output-name", default=None,
+                        help="Optional prefix for model files (e.g. 'mmwave' → 'models/mmwave_rf.pkl')")
     parser.add_argument("--classifiers", nargs="+",
                         default=list(CLASSIFIERS.keys()),
                         choices=list(CLASSIFIERS.keys()),
                         help="Classifiers to train and compare")
     args = parser.parse_args()
 
-    input_path = Path(args.input)
+    if args.input:
+        input_path = Path(args.input)
+    else:
+        candidates = sorted(Path("data/processed").glob("features_*.npz"))
+        if not candidates:
+            print("Error: no features_*.npz found in data/processed/")
+            print("Run extract_features.py first or specify --input")
+            return
+        input_path = candidates[-1]
+
     if not input_path.exists():
         print(f"Error: {input_path} not found. Run extract_features.py first.")
         return
+
+    data_ts = input_path.stem.removeprefix("features_")
 
     data = np.load(input_path, allow_pickle=True)
     X_train = data["X_train"]
@@ -60,6 +78,7 @@ def main() -> None:
     results = {}
     best_score = 0.0
     best_name = ""
+    best_pipeline = None
 
     for name in args.classifiers:
         if name not in CLASSIFIERS:
@@ -96,21 +115,61 @@ def main() -> None:
         print(f"    Test accuracy:  {test_acc:.4f}")
         print(f"    Time:           {train_time:.3f}s")
 
+        y_pred = pipeline.predict(X_test)
+        cm = confusion_matrix(y_test, y_pred)
+        fig, ax = plt.subplots(figsize=(6, 5))
+        display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=gestures)
+        display.plot(ax=ax, cmap="Blues", colorbar=False)
+        ax.set_title(f"{name}\nTest accuracy: {test_acc:.3f}")
+        fig.tight_layout()
+        prefix = f"{args.output_name}_" if args.output_name else ""
+        cm_path = out_dir / f"{prefix}{name}_confusion_matrix_{data_ts}.png"
+        fig.savefig(cm_path, dpi=180)
+        plt.close(fig)
+        print(f"    Confusion matrix: {cm_path}")
+
         if test_acc > best_score:
             best_score = test_acc
             best_name = name
+            best_pipeline = pipeline
 
-        model_path = out_dir / f"{name}.pkl"
+        model_data = {
+            "pipeline": pipeline,
+            "gestures": gestures,
+            "label_map": label_map,
+            "feature_names": feature_names,
+        }
+        prefix = f"{args.output_name}_" if args.output_name else ""
+        model_path = out_dir / f"{prefix}{name}.pkl"
         with open(model_path, "wb") as f:
-            pickle.dump(pipeline, f)
+            pickle.dump(model_data, f)
         print(f"    Saved: {model_path}")
         print()
 
-    if best_name:
-        best_path = out_dir / f"{best_name}.pkl"
-        best_dst = out_dir / "best_model.pkl"
-        import shutil
-        shutil.copy(best_path, best_dst)
+    if best_name and best_pipeline is not None:
+        y_pred = best_pipeline.predict(X_test)
+        cm = confusion_matrix(y_test, y_pred)
+        fig, ax = plt.subplots(figsize=(6, 5))
+        display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=gestures)
+        display.plot(ax=ax, cmap="Blues", colorbar=False)
+        ax.set_title(f"Best model: {best_name}\nTest accuracy: {best_score:.3f}")
+        fig.tight_layout()
+        prefix = f"{args.output_name}_" if args.output_name else ""
+        best_cm_path = out_dir / f"{prefix}best_model_confusion_matrix_{data_ts}.png"
+        fig.savefig(best_cm_path, dpi=180)
+        plt.close(fig)
+        print(f"    Best model confusion matrix: {best_cm_path}")
+
+        model_data = {
+            "pipeline": best_pipeline,
+            "gestures": gestures,
+            "label_map": label_map,
+            "feature_names": feature_names,
+        }
+        prefix = f"{args.output_name}_" if args.output_name else ""
+        best_dst = out_dir / f"{prefix}best_model.pkl"
+        with open(best_dst, "wb") as f:
+            pickle.dump(model_data, f)
         print(f"Best model: {best_name} ({best_score:.4f}) -> {best_dst}")
 
     results_meta = {

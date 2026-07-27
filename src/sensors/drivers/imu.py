@@ -17,6 +17,7 @@ import argparse
 import random
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from src.sensors.base import BaseSensor, SensorObservation
 
@@ -57,6 +58,7 @@ class ImuSensor(BaseSensor):
         self.baudrate = baudrate
         self._gyro_bias: tuple[float, float, float] | None = None
         self._accel_bias: tuple[float, float, float] | None = None
+        self._serial_conn: Any = None  # persistent serial connection
 
     def read(self) -> list[SensorObservation]:
         if self.mode == "serial":
@@ -182,27 +184,40 @@ class ImuSensor(BaseSensor):
 
     def _read_serial_raw(self) -> list[SensorObservation]:
         if self.serial_port is None:
-            return self._read_mock_raw()
+            return []
 
         try:
-            from sensors.lab_integration.imu import parse_imu_line
+            from src.sensors.lab_integration.imu import parse_imu_line
         except ImportError:
-            return self._read_mock_raw()
+            return []
 
         try:
             import serial as pyserial
         except ImportError:
-            return self._read_mock_raw()
+            return []
+
+        if self._serial_conn is None:
+            try:
+                self._serial_conn = pyserial.Serial(
+                    self.serial_port, baudrate=self.baudrate, timeout=0.1,
+                )
+                self._serial_conn.reset_input_buffer()
+                time.sleep(0.05)
+            except Exception as e:
+                print(f"  Warning: could not open {self.serial_port} ({e})")
+                return []
 
         observations: list[SensorObservation] = []
         try:
-            ser = pyserial.Serial(self.serial_port, baudrate=self.baudrate,
-                                  timeout=0.3)
-            for _ in range(10):
+            ser = self._serial_conn
+            ser.reset_input_buffer()
+            for _ in range(5):
                 raw = ser.readline()
                 if not raw:
-                    break
+                    continue
                 line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
                 parsed = parse_imu_line(line)
                 if parsed is None:
                     continue
@@ -227,10 +242,20 @@ class ImuSensor(BaseSensor):
                                   "baudrate": self.baudrate},
                     )
                 )
-            ser.close()
-        except Exception:
-            return self._read_mock_raw()
+                break
+            if not observations:
+                self.close()
+        except Exception as e:
+            self.close()
         return observations
+
+    def close(self) -> None:
+        if self._serial_conn is not None:
+            try:
+                self._serial_conn.close()
+            except Exception:
+                pass
+            self._serial_conn = None
 
 
 __all__ = ["ImuSensor"]

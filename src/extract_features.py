@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import csv
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 from sklearn.model_selection import train_test_split
+
+
+MM_FEATURE_NAMES = [
+    "num_points", "mean_x", "std_x", "mean_y", "std_y", "mean_range",
+]
 
 
 def extract_mmwave_features(frame: dict) -> list[float]:
@@ -15,26 +23,19 @@ def extract_mmwave_features(frame: dict) -> list[float]:
     num_points = data.get("num_points", len(points))
 
     if not points:
-        return [num_points, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0]
 
     xs = np.array([p.get("x", 0) for p in points])
     ys = np.array([p.get("y", 0) for p in points])
-    zs = np.array([p.get("z", 0) for p in points])
-    vs = np.array([p.get("velocity", 0) for p in points])
 
-    features = [
+    return [
         float(num_points),
         float(np.mean(xs)),
         float(np.std(xs)),
         float(np.mean(ys)),
         float(np.std(ys)),
-        float(np.mean(zs)),
-        float(np.std(zs)),
-        float(np.mean(np.abs(vs))),
-        float(np.std(vs)),
         float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)),
     ]
-    return features
 
 
 def extract_imu_features(frame: dict) -> list[float]:
@@ -82,6 +83,23 @@ def _sensor_keys_of_type(frame: dict, sensor_type: str) -> list[str]:
     ]
 
 
+def _total_path_length(frames: list[dict]) -> float:
+    cents = []
+    for f in frames:
+        mm = f.get("mmwave", {}).get("data", {})
+        pts = mm.get("points", [])
+        if pts:
+            xs = [p.get("x", 0) for p in pts]
+            ys = [p.get("y", 0) for p in pts]
+            cents.append((np.mean(xs), np.mean(ys)))
+        else:
+            cents.append((0.0, 0.0))
+    dist = 0.0
+    for i in range(1, len(cents)):
+        dist += np.sqrt((cents[i][0] - cents[i-1][0])**2 + (cents[i][1] - cents[i-1][1])**2)
+    return float(dist)
+
+
 def extract_window_features(
     frames: list[dict],
     window_size: int = 10,
@@ -96,15 +114,13 @@ def extract_window_features(
     uwb_keys = _sensor_keys_of_type(frames[0], "uwb") if frames else []
 
     if mmwave_sensors:
-        feature_names.extend([
-            "mm_num_points", "mm_mean_x", "mm_std_x", "mm_mean_y", "mm_std_y",
-            "mm_mean_z", "mm_std_z", "mm_mean_vel", "mm_std_vel", "mm_mean_range",
-        ])
+        feature_names.extend([f"mm_mean_{n}" for n in MM_FEATURE_NAMES])
+        feature_names.extend([f"mm_std_{n}" for n in MM_FEATURE_NAMES])
+        feature_names.append("mm_path_length")
     if imu_sensors:
-        feature_names.extend([
-            "imu_accel_x", "imu_accel_y", "imu_accel_z",
-            "imu_gyro_x", "imu_gyro_y", "imu_gyro_z",
-        ])
+        imu_base = ["accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"]
+        feature_names.extend([f"imu_mean_{b}" for b in imu_base])
+        feature_names.extend([f"imu_std_{b}" for b in imu_base])
     for uk in uwb_keys:
         feature_names.extend([
             f"{uk}_num_ranges", f"{uk}_mean_range_m", f"{uk}_std_range_m",
@@ -114,28 +130,21 @@ def extract_window_features(
     for i in range(0, len(frames) - window_size + 1, stride):
         window = frames[i:i + window_size]
         gesture = window[0].get("gesture", "unknown")
-
         features: list[float] = []
 
         if mmwave_sensors:
             mm_features = np.array([extract_mmwave_features(f) for f in window])
-            features.extend([
-                float(np.mean(mm_features[:, 0])),
-                float(np.mean(mm_features[:, 1])),
-                float(np.mean(mm_features[:, 2])),
-                float(np.mean(mm_features[:, 3])),
-                float(np.mean(mm_features[:, 4])),
-                float(np.mean(mm_features[:, 5])),
-                float(np.mean(mm_features[:, 6])),
-                float(np.mean(mm_features[:, 7])),
-                float(np.mean(mm_features[:, 8])),
-                float(np.mean(mm_features[:, 9])),
-            ])
+            for col in range(mm_features.shape[1]):
+                features.append(float(np.mean(mm_features[:, col])))
+            for col in range(mm_features.shape[1]):
+                features.append(float(np.std(mm_features[:, col])))
 
         if imu_sensors:
             imu_features = np.array([extract_imu_features(f) for f in window])
             for col in range(imu_features.shape[1]):
                 features.append(float(np.mean(imu_features[:, col])))
+            for col in range(imu_features.shape[1]):
+                features.append(float(np.std(imu_features[:, col])))
 
         for uk in uwb_keys:
             uwb_data = [f.get(uk, {}).get("data", {}) for f in window]
@@ -149,10 +158,71 @@ def extract_window_features(
     return np.array(X_list), np.array(y_list), feature_names
 
 
+def _load_all_frames(input_path: Path) -> list[dict]:
+    """Load frames from any supported format (session dir, CSV, JSON, JSONL)."""
+    frames: list[dict] = []
+
+    if input_path.is_dir() and (input_path / "events.csv").exists():
+        from src.visualize import load_session_csvs
+        for trial_frames in load_session_csvs(input_path).values():
+            frames.extend(trial_frames)
+
+    elif input_path.is_dir():
+        session_dirs = sorted(input_path.glob("*/events.csv"))
+        if session_dirs:
+            from src.visualize import load_session_csvs
+            for ev_csv in session_dirs:
+                for trial_frames in load_session_csvs(ev_csv.parent).values():
+                    frames.extend(trial_frames)
+        else:
+            jsonl_files = sorted(input_path.glob("*.jsonl"))
+            for f in jsonl_files:
+                for line in f.read_text().strip().splitlines():
+                    if line.strip():
+                        frames.append(json.loads(line))
+
+    elif input_path.suffix == ".csv":
+        with open(input_path, newline="") as f:
+            for row in csv.DictReader(f):
+                frame = {
+                    "timestamp": row["timestamp"],
+                    "gesture": row["gesture"],
+                    "trial": int(row["trial"]),
+                    "elapsed": float(row["elapsed"]),
+                }
+                try:
+                    pts = json.loads(row.get("points", "[]")) if row.get("points") and row["points"] != "null" else []
+                except json.JSONDecodeError:
+                    pts = []
+                frame["mmwave"] = {
+                    "data": {
+                        "num_points": int(row.get("num_points", len(pts))),
+                        "points": pts,
+                    },
+                    "sensor_type": "mmwave",
+                }
+                frames.append(frame)
+
+    elif input_path.suffix == ".json":
+        data = json.loads(input_path.read_text())
+        frames_list = data.get("frames", data if isinstance(data, list) else [])
+        frames.extend(frames_list)
+
+    elif input_path.suffix == ".jsonl":
+        for line in input_path.read_text().strip().splitlines():
+            if line.strip():
+                frames.append(json.loads(line))
+
+    else:
+        raise ValueError(f"Unrecognized input: {input_path}")
+
+    return frames
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract features from raw gesture data")
-    parser.add_argument("--input", default="data/processed/combined_dataset.json",
-                        help="Input combined dataset JSON")
+    parser.add_argument("--input", default="data/raw",
+                        help="Session folder, combined CSV, combined JSON, or JSONL")
     parser.add_argument("--output", default="data/processed",
                         help="Output directory for feature matrices")
     parser.add_argument("--window", type=int, default=10,
@@ -166,20 +236,67 @@ def main() -> None:
 
     input_path = Path(args.input)
     if not input_path.exists():
-        print(f"Error: {input_path} not found. Run combine_datasets.py first.")
+        print(f"Error: {input_path} not found.")
         return
 
-    with open(input_path) as f:
-        dataset = json.load(f)
+    print(f"Loading data from: {input_path}")
+    frames = _load_all_frames(input_path)
+    if not frames:
+        print("No frames loaded.")
+        return
+    print(f"Loaded {len(frames)} frames")
 
-    frames = dataset["frames"]
-    print(f"Loaded {len(frames)} frames from {input_path}")
+    mm = frames[0].get("mmwave", {})
+    d = mm.get("data", {}) if isinstance(mm, dict) else {}
+    pts = d.get("points", [])
+    print(f"\nFirst frame mmwave data keys: {list(d.keys())}")
+    print(f"  num_points: {d.get('num_points')}")
+    if pts:
+        print(f"  Sample point (first of {len(pts)}): {pts[0]}")
+        print(f"  Point keys: {list(pts[0].keys())}")
+    else:
+        print(f"  WARNING: No points in first frame — all features will be zero!")
+
+    empty_count = sum(1 for f in frames
+                      if not f.get("mmwave", {}).get("data", {}).get("points", []))
+    print(f"  Frames with empty points: {empty_count}/{len(frames)}")
+
+    mm = frames[0].get("mmwave", {})
+    d = mm.get("data", {}) if isinstance(mm, dict) else {}
+    pts = d.get("points", [])
+    print(f"\nFirst frame mmwave data keys: {list(d.keys())}")
+    print(f"  num_points: {d.get('num_points')}")
+    if pts:
+        print(f"  Sample point (first of {len(pts)}): {pts[0]}")
+        print(f"  Point keys: {list(pts[0].keys())}")
+    else:
+        print(f"  WARNING: No points in first frame — all features will be zero!")
+
+    input_ts = None
+    stem = input_path.stem if not input_path.is_dir() else input_path.name
+    if stem.startswith("session_"):
+        input_ts = stem.removeprefix("session_")
+    elif stem.startswith("combined_"):
+        input_ts = stem.removeprefix("combined_")
+    elif stem.startswith("features_"):
+        input_ts = stem.removeprefix("features_")
+    else:
+        from datetime import datetime, timezone
+        input_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     X, y, feature_names = extract_window_features(
         frames, window_size=args.window, stride=args.stride,
     )
     print(f"\nExtracted {len(X)} windows with {len(feature_names)} features each")
     print(f"Feature names: {feature_names}")
+
+    unique_gestures, counts = np.unique(y, return_counts=True)
+    print(f"\nClass distribution:")
+    for g, c in zip(unique_gestures, counts):
+        idx = y == g
+        print(f"  {g} ({c} windows): "
+              f"feat0 mean={X[idx, 0].mean():.3f} std={X[idx, 0].std():.3f} — "
+              f"feat1 mean={X[idx, 1].mean():.3f} std={X[idx, 1].std():.3f}")
 
     gestures = sorted(set(y))
     label_map = {g: i for i, g in enumerate(gestures)}
@@ -193,7 +310,7 @@ def main() -> None:
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    npz_path = out_dir / "features.npz"
+    npz_path = out_dir / f"features_{input_ts}.npz"
     np.savez_compressed(
         npz_path,
         X_train=X_train, X_test=X_test,

@@ -1,0 +1,18 @@
+{
+  "label_to_int": {
+    "anticlockwise": 0,
+    "clockwise": 1,
+    "left": 2,
+    "pull": 3,
+    "push": 4,
+    "right": 5
+  },
+  "int_to_label": {
+    "0": "anticlockwise",
+    "1": "clockwise",
+    "2": "left",
+    "3": "pull",
+    "4": "push",
+    "5": "right"
+  }
+}
