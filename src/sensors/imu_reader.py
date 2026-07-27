@@ -10,12 +10,14 @@ class ImuReader(BaseReader):
         sensor_id: str = "imu-0",
         mode: str = "mock",
         serial_port: str | None = None,
+        baudrate: int = 115200,
     ):
         super().__init__(sensor_id=sensor_id, sensor_type="imu")
         self._sensor = ImuSensor(
             sensor_id=sensor_id,
             mode=mode,
             serial_port=serial_port,
+            baudrate=baudrate,
         )
         self._started = False
         self._last_reading: Reading | None = None
