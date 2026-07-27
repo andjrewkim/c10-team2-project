@@ -24,6 +24,16 @@ def main() -> None:
     all_frames: list[dict] = []
     gesture_counts: Counter = Counter()
     skipped = 0
+    latest_ts: str | None = None
+
+    def _update_latest_ts(name: str) -> None:
+        nonlocal latest_ts
+        for prefix in ("session_", "combined_", "features_"):
+            if name.startswith(prefix):
+                ts = name.removeprefix(prefix)
+                if latest_ts is None or ts > latest_ts:
+                    latest_ts = ts
+                return
 
     for input_path in input_paths:
         if not input_path.exists():
@@ -38,15 +48,19 @@ def main() -> None:
                 print(f"  Skipping {input_path.name}: {e}")
                 skipped += 1
                 continue
+            source = input_path.name
             for trial_key, trial_frames in trials.items():
                 if len(trial_frames) < args.min_frames:
                     print(f"  Skipping {input_path.name}/{trial_key}: {len(trial_frames)} frames < {args.min_frames}")
                     skipped += 1
                     continue
+                for f in trial_frames:
+                    f["dataset_source"] = source
                 gesture = trial_frames[0].get("gesture", "unknown")
                 gesture_counts[gesture] += len(trial_frames)
                 all_frames.extend(trial_frames)
             print(f"  Loaded {input_path.name}: {sum(len(v) for v in trials.values())} frames")
+            _update_latest_ts(input_path.name)
 
         elif input_path.is_dir():
             session_dirs = sorted(input_path.glob("*/events.csv"))
@@ -58,15 +72,19 @@ def main() -> None:
                         print(f"  Skipping {ev_csv.parent.name}: {e}")
                         skipped += 1
                         continue
+                    source = ev_csv.parent.name
                     for trial_key, trial_frames in trials.items():
                         if len(trial_frames) < args.min_frames:
                             print(f"  Skipping {ev_csv.parent.name}/{trial_key}: {len(trial_frames)} frames < {args.min_frames}")
                             skipped += 1
                             continue
+                        for f in trial_frames:
+                            f["dataset_source"] = source
                         gesture = trial_frames[0].get("gesture", "unknown")
                         gesture_counts[gesture] += len(trial_frames)
                         all_frames.extend(trial_frames)
                     print(f"  Loaded {ev_csv.parent.name}: {sum(len(v) for v in trials.values())} frames")
+                    _update_latest_ts(ev_csv.parent.name)
             else:
                 jsonl_files = sorted(input_path.glob("*.jsonl"))
                 if not jsonl_files:
@@ -81,6 +99,7 @@ def main() -> None:
                         skipped += 1
                         continue
                     for frame in frames:
+                        frame["dataset_source"] = fpath.stem
                         gesture = frame.get("gesture", "unknown")
                         gesture_counts[gesture] += 1
                     all_frames.extend(frames)
@@ -96,10 +115,12 @@ def main() -> None:
                 skipped += 1
                 continue
             for frame in frames_list:
+                frame.setdefault("dataset_source", input_path.stem)
                 gesture = frame.get("gesture", "unknown")
                 gesture_counts[gesture] += 1
             all_frames.extend(frames_list)
             print(f"  Loaded {input_path.name}: {len(frames_list)} frames")
+            _update_latest_ts(input_path.stem)
 
         else:
             print(f"  Skipping {input_path}: unrecognized format")
@@ -120,11 +141,15 @@ def main() -> None:
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = latest_ts or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     csv_path = out_dir / f"combined_{timestamp}.csv"
+    suffix = 1
+    while csv_path.exists():
+        csv_path = out_dir / f"combined_{timestamp}_{suffix}.csv"
+        suffix += 1
 
     fieldnames = ["frame_index", "timestamp", "gesture", "trial", "elapsed",
-                  "confidence", "num_points", "points", "range_profile", "motion_score"]
+                  "dataset_source", "confidence", "num_points", "points", "range_profile", "motion_score"]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -137,6 +162,7 @@ def main() -> None:
                 "gesture": frame.get("gesture", ""),
                 "trial": frame.get("trial", 0),
                 "elapsed": round(frame.get("elapsed", 0.0), 6),
+                "dataset_source": frame.get("dataset_source", ""),
                 "confidence": mm.get("confidence", 0.0) if isinstance(mm, dict) else 0.0,
                 "num_points": d.get("num_points", len(d.get("points", []))),
                 "points": json.dumps(d.get("points", [])),
@@ -146,7 +172,7 @@ def main() -> None:
             writer.writerow(row)
     print(f"\nSaved: {csv_path} ({len(all_frames)} rows)")
 
-    label_path = out_dir / f"combined_{timestamp}_labels.json"
+    label_path = csv_path.with_stem(csv_path.stem + "_labels").with_suffix(".json")
     with open(label_path, "w") as f:
         json.dump({"label_to_int": label_to_int, "int_to_label": int_to_label}, f, indent=2)
     print(f"Saved: {label_path}")

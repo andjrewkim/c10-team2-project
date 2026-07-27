@@ -25,8 +25,8 @@ CLASSIFIERS = {
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train gesture classification models")
-    parser.add_argument("--input", default="data/processed/features.npz",
-                        help="Input feature matrix NPZ")
+    parser.add_argument("--input", default=None,
+                        help="Input feature NPZ file (default: latest features_*.npz in data/processed)")
     parser.add_argument("--output", default="models",
                         help="Output directory for trained models")
     parser.add_argument("--classifiers", nargs="+",
@@ -35,7 +35,16 @@ def main() -> None:
                         help="Classifiers to train and compare")
     args = parser.parse_args()
 
-    input_path = Path(args.input)
+    if args.input:
+        input_path = Path(args.input)
+    else:
+        candidates = sorted(Path("data/processed").glob("features_*.npz"))
+        if not candidates:
+            print("Error: no features_*.npz found in data/processed/")
+            print("Run extract_features.py first or specify --input")
+            return
+        input_path = candidates[-1]
+
     if not input_path.exists():
         print(f"Error: {input_path} not found. Run extract_features.py first.")
         return
