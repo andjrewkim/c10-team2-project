@@ -100,49 +100,30 @@ def main() -> None:
 
     print(f"Loading model: {model_path}")
     with open(model_path, "rb") as f:
-        pipeline = pickle.load(f)
-    print(f"  Model type: {type(pipeline).__name__}")
-
-    if hasattr(pipeline, "classes_"):
-        model_classes = list(pipeline.classes_)
-        print(f"  Model classes: {model_classes}")
+        raw = pickle.load(f)
+    if isinstance(raw, dict):
+        pipeline = raw["pipeline"]
+        gestures = raw.get("gestures", [])
+        label_map = raw.get("label_map", {})
     else:
-        model_classes = None
+        pipeline = raw
+        gestures = []
+        label_map = {}
 
-    print(f"\nLoading data from: {args.input}")
-    frames_by_trial = _load_frames(Path(args.input))
-    print(f"  Loaded {len(frames_by_trial)} trials")
+    data = np.load(features_path, allow_pickle=True)
+    X_test = data["X_test"]
+    y_test = data["y_test"]
+    if not gestures:
+        gestures = data["gestures"].tolist() if "gestures" in data else []
+    if not label_map:
+        label_map = data["label_map"].item() if "label_map" in data else {}
+    int_to_label = {v: k for k, v in label_map.items()}
 
-    all_X: list[np.ndarray] = []
-    all_y: list[str] = []
-    trial_labels: list[str] = []
+    print(f"Loaded model: {model_path}")
+    print(f"Test samples: {len(X_test)}")
+    print(f"Classes: {len(gestures)}")
 
-    for trial_key, trial_frames in frames_by_trial.items():
-        if not trial_frames:
-            continue
-        gesture = trial_frames[0].get("gesture", "unknown")
-        X_win, y_win, _ = extract_window_features(trial_frames, window_size=args.window, stride=args.stride)
-        if len(X_win) == 0:
-            print(f"  Skipping {trial_key}: too few frames ({len(trial_frames)}) for window size {args.window}")
-            continue
-        all_X.append(X_win)
-        all_y.extend(y_win)
-        trial_labels.extend([trial_key] * len(X_win))
-
-    if not all_X:
-        print("No valid windows extracted.")
-        return
-
-    X = np.vstack(all_X)
-    print(f"  Total windows: {len(X)}")
-
-    label_set = sorted(set(all_y))
-    label_to_int = {g: i for i, g in enumerate(label_set)}
-    y_true = np.array([label_to_int[g] for g in all_y])
-
-    print(f"\n--- Making predictions ---")
-    y_pred = pipeline.predict(X)
-    y_pred_labels = [label_set[int(p)] if isinstance(p, (int, np.integer)) else p for p in y_pred]
+    y_pred = pipeline.predict(X_test)
 
     if hasattr(pipeline, "predict_proba"):
         y_prob = pipeline.predict_proba(X)

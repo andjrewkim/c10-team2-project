@@ -18,6 +18,7 @@ class ImuReader(BaseReader):
             serial_port=serial_port,
         )
         self._started = False
+        self._last_reading: Reading | None = None
 
     def start(self) -> None:
         self._started = True
@@ -25,6 +26,8 @@ class ImuReader(BaseReader):
     def read(self) -> Reading:
         obs_list = self._sensor.read()
         if not obs_list:
+            if self._last_reading is not None:
+                return self._last_reading
             return Reading(
                 sensor_id=self.sensor_id,
                 sensor_type=self.sensor_type,
@@ -33,7 +36,7 @@ class ImuReader(BaseReader):
             )
         obs = obs_list[0]
         o = obs.observation or {}
-        return Reading(
+        self._last_reading = Reading(
             sensor_id=self.sensor_id,
             sensor_type=self.sensor_type,
             timestamp=obs.timestamp,
@@ -53,6 +56,7 @@ class ImuReader(BaseReader):
             },
             confidence=obs.confidence,
         )
+        return self._last_reading
 
     def zero(self, num_samples: int = 50) -> dict[str, tuple[float, float, float]]:
         return self._sensor.zero(num_samples=num_samples)
@@ -62,3 +66,4 @@ class ImuReader(BaseReader):
 
     def stop(self) -> None:
         self._started = False
+        self._sensor.close()

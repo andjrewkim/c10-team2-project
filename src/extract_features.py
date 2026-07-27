@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import argparse
 import csv
+import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 from sklearn.model_selection import train_test_split
+
+
+MM_FEATURE_NAMES = [
+    "num_points", "mean_x", "std_x", "mean_y", "std_y", "mean_range",
+]
 
 
 def extract_mmwave_features(frame: dict) -> list[float]:
@@ -17,20 +23,21 @@ def extract_mmwave_features(frame: dict) -> list[float]:
     num_points = data.get("num_points", len(points))
 
     if not points:
+        return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0]
         return [num_points, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     xs = np.array([p.get("x", 0) for p in points])
     ys = np.array([p.get("y", 0) for p in points])
 
-    features = [
+    return [
         float(num_points),
         float(np.mean(xs)),
         float(np.std(xs)),
         float(np.mean(ys)),
         float(np.std(ys)),
         float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)), # distance from center
+        float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)),
     ]
-    return features
 
 
 def extract_imu_features(frame: dict) -> list[float]:
@@ -50,6 +57,23 @@ def extract_imu_features(frame: dict) -> list[float]:
     return features
 
 
+def _total_path_length(frames: list[dict]) -> float:
+    cents = []
+    for f in frames:
+        mm = f.get("mmwave", {}).get("data", {})
+        pts = mm.get("points", [])
+        if pts:
+            xs = [p.get("x", 0) for p in pts]
+            ys = [p.get("y", 0) for p in pts]
+            cents.append((np.mean(xs), np.mean(ys)))
+        else:
+            cents.append((0.0, 0.0))
+    dist = 0.0
+    for i in range(1, len(cents)):
+        dist += np.sqrt((cents[i][0] - cents[i-1][0])**2 + (cents[i][1] - cents[i-1][1])**2)
+    return float(dist)
+
+
 def extract_window_features(
     frames: list[dict],
     window_size: int = 10,
@@ -63,20 +87,17 @@ def extract_window_features(
     imu_sensors = any("imu" in f for f in frames)
 
     if mmwave_sensors:
-        feature_names.extend([
-            "mm_num_points", "mm_mean_x", "mm_std_x", "mm_mean_y", "mm_std_y",
-            "mm_mean_z", "mm_std_z", "mm_mean_vel", "mm_std_vel", "mm_mean_range",
-        ])
+        feature_names.extend([f"mm_mean_{n}" for n in MM_FEATURE_NAMES])
+        feature_names.extend([f"mm_std_{n}" for n in MM_FEATURE_NAMES])
+        feature_names.append("mm_path_length")
     if imu_sensors:
-        feature_names.extend([
-            "imu_accel_x", "imu_accel_y", "imu_accel_z",
-            "imu_gyro_x", "imu_gyro_y", "imu_gyro_z",
-        ])
+        imu_base = ["accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"]
+        feature_names.extend([f"imu_mean_{b}" for b in imu_base])
+        feature_names.extend([f"imu_std_{b}" for b in imu_base])
 
     for i in range(0, len(frames) - window_size + 1, stride):
         window = frames[i:i + window_size]
         gesture = window[0].get("gesture", "unknown")
-
         features: list[float] = []
 
         if mmwave_sensors:
@@ -88,6 +109,8 @@ def extract_window_features(
             imu_features = np.array([extract_imu_features(f) for f in window])
             for col in range(imu_features.shape[1]):
                 features.append(float(np.mean(imu_features[:, col])))
+            for col in range(imu_features.shape[1]):
+                features.append(float(np.std(imu_features[:, col])))
 
         X_list.append(features)
         y_list.append(gesture)

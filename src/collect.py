@@ -158,7 +158,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Collect gesture data")
     parser.add_argument("--gestures", nargs="+", default=["push", "pull"],
                         help="Gestures to collect")
-    parser.add_argument("--duration", type=float, default=5.0,
+    parser.add_argument("--duration", type=float, default=2.0,
                         help="Seconds per trial")
     parser.add_argument("--trials", type=int, default=3,
                         help="Trials per gesture")
