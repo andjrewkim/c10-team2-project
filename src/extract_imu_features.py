@@ -151,9 +151,11 @@ def main() -> None:
         random_state=args.random_state, stratify=y_int,
     )
 
-    npz_path = Path(args.output)
-    npz_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(npz_path,
+    output_path = Path(args.output)
+    if output_path.is_dir() or output_path.suffix != ".npz":
+        output_path = output_path / "imu_features.npz"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(output_path,
         X_train=X_train, X_test=X_test,
         y_train=y_train, y_test=y_test,
         feature_names=feature_names,
@@ -162,7 +164,7 @@ def main() -> None:
         window_size=args.window,
         stride=args.stride,
     )
-    print(f"\nSaved: {npz_path}")
+    print(f"\nSaved: {output_path}")
     print(f"  Train: {len(X_train)}  Test: {len(X_test)}  Classes: {len(gestures)} ({', '.join(gestures)})")
 
 
