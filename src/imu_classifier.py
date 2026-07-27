@@ -27,7 +27,7 @@ DEFAULT_MODEL_PATH = Path("model_imu_student.joblib")
 DEFAULT_TRAINING_DATA_PATH = Path("training_data_imu_student.joblib")
 G_MPS2 = 9.80665
 
-CHANNEL_NAMES = ("ax", "ay", "az", "gx", "gy", "gz")
+CHANNEL_NAMES = ("ax", "ay", "az", "gx", "gy", "gz", "gm", "am")
 ACCEL_COLORS = ("#4C72B0", "#55A868", "#C44E52")
 GYRO_COLORS = ("#8172B3", "#CCB974", "#64B5CD")
 ImuSample = tuple[float, float, float, float, float, float, float]
@@ -253,7 +253,7 @@ class ImuSegmentFeatureExtractor:
 
         data = self.np.asarray(normalized_samples, dtype="float32")
         times = data[:, 0]
-        values = data[:, 1:7]
+        values_6 = data[:, 1:7]  # raw 6 channels: ax, ay, az, gx, gy, gz
         duration_s = float(times[-1] - times[0])
         if duration_s <= 0.0:
             raise RuntimeError("Segment duration is zero.")
@@ -263,12 +263,20 @@ class ImuSegmentFeatureExtractor:
             )
 
         rel_time = times - times[0]
-        resampled = self.np.column_stack(
+        # Resample all 6 raw channels
+        resampled_6 = self.np.column_stack(
             [
-                self.np.interp(self.target_time, rel_time, values[:, channel])
-                for channel in range(values.shape[1])
+                self.np.interp(self.target_time, rel_time, values_6[:, channel])
+                for channel in range(values_6.shape[1])
             ]
         ).astype("float32")
+
+        # Augment with gyro magnitude and accel magnitude as additional channels
+        accel = resampled_6[:, 0:3]
+        gyro = resampled_6[:, 3:6]
+        gyro_mag = self.np.sqrt(self.np.sum(gyro**2, axis=1, keepdims=True))
+        accel_mag = self.np.sqrt(self.np.sum(accel**2, axis=1, keepdims=True))
+        resampled = self.np.concatenate([resampled_6, gyro_mag, accel_mag], axis=1).astype("float32")  # (N, 8)
 
         means = resampled.mean(axis=0)
         centered = resampled - means
