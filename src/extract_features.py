@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import csv
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +24,7 @@ def extract_mmwave_features(frame: dict) -> list[float]:
 
     if not points:
         return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0]
+        return [num_points, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     xs = np.array([p.get("x", 0) for p in points])
     ys = np.array([p.get("y", 0) for p in points])
@@ -32,6 +35,7 @@ def extract_mmwave_features(frame: dict) -> list[float]:
         float(np.std(xs)),
         float(np.mean(ys)),
         float(np.std(ys)),
+        float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)), # distance from center
         float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)),
     ]
 
@@ -100,9 +104,6 @@ def extract_window_features(
             mm_features = np.array([extract_mmwave_features(f) for f in window])
             for col in range(mm_features.shape[1]):
                 features.append(float(np.mean(mm_features[:, col])))
-            for col in range(mm_features.shape[1]):
-                features.append(float(np.std(mm_features[:, col])))
-            features.append(_total_path_length(window))
 
         if imu_sensors:
             imu_features = np.array([extract_imu_features(f) for f in window])
@@ -117,46 +118,71 @@ def extract_window_features(
     return np.array(X_list), np.array(y_list), feature_names
 
 
-def load_frames_from_csv(path: Path) -> list[dict]:
-    frames = []
-    with open(path) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                points = json.loads(row.get("points", "[]"))
-            except json.JSONDecodeError:
-                points = []
-            frame = {
-                "timestamp": row.get("timestamp", ""),
-                "gesture": row.get("gesture", "unknown"),
-                "trial": int(row.get("trial", 0)),
-                "elapsed": float(row.get("elapsed", 0.0)),
-                "mmwave": {
+def _load_all_frames(input_path: Path) -> list[dict]:
+    """Load frames from any supported format (session dir, CSV, JSON, JSONL)."""
+    frames: list[dict] = []
+
+    if input_path.is_dir() and (input_path / "events.csv").exists():
+        from src.visualize import load_session_csvs
+        for trial_frames in load_session_csvs(input_path).values():
+            frames.extend(trial_frames)
+
+    elif input_path.is_dir():
+        session_dirs = sorted(input_path.glob("*/events.csv"))
+        if session_dirs:
+            from src.visualize import load_session_csvs
+            for ev_csv in session_dirs:
+                for trial_frames in load_session_csvs(ev_csv.parent).values():
+                    frames.extend(trial_frames)
+        else:
+            jsonl_files = sorted(input_path.glob("*.jsonl"))
+            for f in jsonl_files:
+                for line in f.read_text().strip().splitlines():
+                    if line.strip():
+                        frames.append(json.loads(line))
+
+    elif input_path.suffix == ".csv":
+        with open(input_path, newline="") as f:
+            for row in csv.DictReader(f):
+                frame = {
+                    "timestamp": row["timestamp"],
+                    "gesture": row["gesture"],
+                    "trial": int(row["trial"]),
+                    "elapsed": float(row["elapsed"]),
+                }
+                try:
+                    pts = json.loads(row.get("points", "[]")) if row.get("points") and row["points"] != "null" else []
+                except json.JSONDecodeError:
+                    pts = []
+                frame["mmwave"] = {
                     "data": {
-                        "points": [
-                            {
-                                "x": p.get("x", 0),
-                                "y": p.get("y", 0),
-                                "z": p.get("z", 0),
-                                "velocity": p.get("velocity", 0),
-                                "snr": p.get("snr", 0),
-                            }
-                            for p in points
-                        ],
-                        "num_points": len(points),
+                        "num_points": int(row.get("num_points", len(pts))),
+                        "points": pts,
                     },
-                    "confidence": float(row.get("confidence", 0.8)),
                     "sensor_type": "mmwave",
-                },
-            }
-            frames.append(frame)
+                }
+                frames.append(frame)
+
+    elif input_path.suffix == ".json":
+        data = json.loads(input_path.read_text())
+        frames_list = data.get("frames", data if isinstance(data, list) else [])
+        frames.extend(frames_list)
+
+    elif input_path.suffix == ".jsonl":
+        for line in input_path.read_text().strip().splitlines():
+            if line.strip():
+                frames.append(json.loads(line))
+
+    else:
+        raise ValueError(f"Unrecognized input: {input_path}")
+
     return frames
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract features from raw gesture data")
-    parser.add_argument("--input", default="data/processed",
-                        help="Input directory containing combined_*.csv")
+    parser.add_argument("--input", default="data/raw",
+                        help="Session folder, combined CSV, combined JSON, or JSONL")
     parser.add_argument("--output", default="data/processed",
                         help="Output directory for feature matrices")
     parser.add_argument("--window", type=int, default=10,
@@ -168,15 +194,29 @@ def main() -> None:
     parser.add_argument("--random-state", type=int, default=42)
     args = parser.parse_args()
 
-    input_dir = Path(args.input)
-    csv_files = sorted(input_dir.glob("combined_*.csv"))
-    if not csv_files:
-        print(f"Error: no combined_*.csv files found in {input_dir}")
+    input_path = Path(args.input)
+    if not input_path.exists():
+        print(f"Error: {input_path} not found.")
         return
 
-    csv_path = csv_files[-1]
-    frames = load_frames_from_csv(csv_path)
-    print(f"Loaded {len(frames)} frames from {csv_path}")
+    print(f"Loading data from: {input_path}")
+    frames = _load_all_frames(input_path)
+    if not frames:
+        print("No frames loaded.")
+        return
+    print(f"Loaded {len(frames)} frames")
+
+    input_ts = None
+    stem = input_path.stem if not input_path.is_dir() else input_path.name
+    if stem.startswith("session_"):
+        input_ts = stem.removeprefix("session_")
+    elif stem.startswith("combined_"):
+        input_ts = stem.removeprefix("combined_")
+    elif stem.startswith("features_"):
+        input_ts = stem.removeprefix("features_")
+    else:
+        from datetime import datetime, timezone
+        input_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     X, y, feature_names = extract_window_features(
         frames, window_size=args.window, stride=args.stride,
@@ -196,7 +236,7 @@ def main() -> None:
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    npz_path = out_dir / "features.npz"
+    npz_path = out_dir / f"features_{input_ts}.npz"
     np.savez_compressed(
         npz_path,
         X_train=X_train, X_test=X_test,
