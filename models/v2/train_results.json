@@ -1,0 +1,103 @@
+{
+  "num_train": 4036,
+  "num_test": 1010,
+  "num_features": 48,
+  "feature_names": [
+    "mean_accel_x",
+    "mean_accel_y",
+    "mean_accel_z",
+    "mean_gyro_x",
+    "mean_gyro_y",
+    "mean_gyro_z",
+    "mean_gyro_mag",
+    "mean_accel_mag",
+    "std_accel_x",
+    "std_accel_y",
+    "std_accel_z",
+    "std_gyro_x",
+    "std_gyro_y",
+    "std_gyro_z",
+    "std_gyro_mag",
+    "std_accel_mag",
+    "delta_accel_x_t0",
+    "delta_accel_x_t1",
+    "delta_accel_x_t2",
+    "delta_accel_x_t3",
+    "delta_accel_y_t0",
+    "delta_accel_y_t1",
+    "delta_accel_y_t2",
+    "delta_accel_y_t3",
+    "delta_accel_z_t0",
+    "delta_accel_z_t1",
+    "delta_accel_z_t2",
+    "delta_accel_z_t3",
+    "delta_gyro_x_t0",
+    "delta_gyro_x_t1",
+    "delta_gyro_x_t2",
+    "delta_gyro_x_t3",
+    "delta_gyro_y_t0",
+    "delta_gyro_y_t1",
+    "delta_gyro_y_t2",
+    "delta_gyro_y_t3",
+    "delta_gyro_z_t0",
+    "delta_gyro_z_t1",
+    "delta_gyro_z_t2",
+    "delta_gyro_z_t3",
+    "delta_gyro_mag_t0",
+    "delta_gyro_mag_t1",
+    "delta_gyro_mag_t2",
+    "delta_gyro_mag_t3",
+    "delta_accel_mag_t0",
+    "delta_accel_mag_t1",
+    "delta_accel_mag_t2",
+    "delta_accel_mag_t3"
+  ],
+  "gestures": [
+    "anticlockwise",
+    "bye-bye",
+    "clapping",
+    "clockwise",
+    "left",
+    "pull",
+    "push",
+    "right"
+  ],
+  "label_map": {
+    "anticlockwise": 0,
+    "bye-bye": 1,
+    "clapping": 2,
+    "clockwise": 3,
+    "left": 4,
+    "pull": 5,
+    "push": 6,
+    "right": 7
+  },
+  "results": {
+    "random_forest": {
+      "train_accuracy": 0.9224479682854311,
+      "test_accuracy": 0.7891089108910891,
+      "train_time_s": 0.301,
+      "params": "{'bootstrap': True, 'ccp_alpha': 0.0, 'class_weight': None, 'criterion': 'gini', 'max_depth': 10, 'max_features': 'sqrt', 'max_leaf_nodes': None, 'max_samples': None, 'min_impurity_decrease': 0.0, 'min_samples_leaf': 1, 'min_samples_split': 2, 'min_weight_fraction_leaf': 0.0, 'monotonic_cst': None, 'n_estimators': 100, 'n_jobs': -1, 'oob_score': False, 'random_state': 42, 'verbose': 0, 'warm_start': False}"
+    },
+    "knn": {
+      "train_accuracy": 0.8500991080277502,
+      "test_accuracy": 0.7900990099009901,
+      "train_time_s": 0.002,
+      "params": "{'algorithm': 'auto', 'leaf_size': 30, 'metric': 'minkowski', 'metric_params': None, 'n_jobs': -1, 'n_neighbors': 5, 'p': 2, 'weights': 'uniform'}"
+    },
+    "svm_rbf": {
+      "train_accuracy": 0.7993062438057482,
+      "test_accuracy": 0.7297029702970297,
+      "train_time_s": 2.425,
+      "params": "{'C': 1.0, 'break_ties': False, 'cache_size': 200, 'class_weight': None, 'coef0': 0.0, 'decision_function_shape': 'ovr', 'degree': 3, 'gamma': 'scale', 'kernel': 'rbf', 'max_iter': -1, 'probability': True, 'random_state': 42, 'shrinking': True, 'tol': 0.001, 'verbose': False}"
+    },
+    "svm_linear": {
+      "train_accuracy": 0.7485133795837463,
+      "test_accuracy": 0.7128712871287128,
+      "train_time_s": 2.87,
+      "params": "{'C': 1.0, 'break_ties': False, 'cache_size': 200, 'class_weight': None, 'coef0': 0.0, 'decision_function_shape': 'ovr', 'degree': 3, 'gamma': 'scale', 'kernel': 'linear', 'max_iter': -1, 'probability': True, 'random_state': 42, 'shrinking': True, 'tol': 0.001, 'verbose': False}"
+    }
+  },
+  "best_model": "knn",
+  "best_score": 0.7900990099009901
+}
