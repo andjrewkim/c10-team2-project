@@ -62,11 +62,27 @@ def extract_window_features(
     window_size: int = 5,
     stride: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """
+    Extract features from a list of IMU frames using a sliding window.
+
+    Features per window:
+      - Mean of each channel (accel x/y/z, gyro x/y/z, gyro_mag, accel_mag)
+      - Std  of each channel (same 8)
+      - Accel deltas  (frame-to-frame diff for accel x/y/z → 3*(window-1) values)
+      - Gyro deltas  (frame-to-frame diff for gyro x/y/z → 3*(window-1) values)
+      - Magnitude deltas (frame-to-frame diff for gyro_mag, accel_mag → 2*(window-1) values)
+    """
     X_list, y_list = [], []
     base_names = [
         "accel_x", "accel_y", "accel_z",
         "gyro_x", "gyro_y", "gyro_z",
+        "gyro_mag", "accel_mag",
     ]
+    # Indices within the 8-column per-frame array
+    ACCEL_IDX = slice(0, 3)
+    GYRO_IDX = slice(3, 6)
+    GYRO_MAG_IDX = 6
+    ACCEL_MAG_IDX = 7
 
     for i in range(0, len(frames) - window_size + 1, stride):
         window = frames[i:i + window_size]
@@ -77,25 +93,46 @@ def extract_window_features(
             imu = f.get("imu", {}).get("data", {})
             accel = imu.get("accel", [0, 0, 0])
             gyro = imu.get("gyro", [0, 0, 0])
+            ax = float(accel[0]) if len(accel) > 0 else 0.0
+            ay = float(accel[1]) if len(accel) > 1 else 0.0
+            az = float(accel[2]) if len(accel) > 2 else 0.0
+            gx = float(gyro[0]) if len(gyro) > 0 else 0.0
+            gy = float(gyro[1]) if len(gyro) > 1 else 0.0
+            gz = float(gyro[2]) if len(gyro) > 2 else 0.0
             per_frame.append([
-                float(accel[0]) if len(accel) > 0 else 0.0,
-                float(accel[1]) if len(accel) > 1 else 0.0,
-                float(accel[2]) if len(accel) > 2 else 0.0,
-                float(gyro[0]) if len(gyro) > 0 else 0.0,
-                float(gyro[1]) if len(gyro) > 1 else 0.0,
-                float(gyro[2]) if len(gyro) > 2 else 0.0,
+                ax, ay, az,
+                gx, gy, gz,
+                np.sqrt(gx*gx + gy*gy + gz*gz),   # gyro magnitude
+                np.sqrt(ax*ax + ay*ay + az*az),   # accel magnitude
             ])
 
         feats = np.array(per_frame)
-        accel_deltas = feats[1:, 0:3] - feats[:-1, 0:3]
+        # Mean and std for all 8 channels
         features = list(np.mean(feats, axis=0))
         features.extend(np.std(feats, axis=0).tolist())
-        features.extend(accel_deltas.flatten().tolist())
+
+        # Accel deltas (3 channels, window-1 time steps)
+        features.extend((feats[1:, ACCEL_IDX] - feats[:-1, ACCEL_IDX]).flatten().tolist())
+        # Gyro deltas (3 channels, window-1 time steps)
+        features.extend((feats[1:, GYRO_IDX] - feats[:-1, GYRO_IDX]).flatten().tolist())
+        # Magnitude deltas (2 channels, window-1 time steps)
+        features.extend((feats[1:, 6:8] - feats[:-1, 6:8]).flatten().tolist())
+
         X_list.append(features)
         y_list.append(gesture)
 
-    delta_names = [f"delta_{n}_t{t}" for n in base_names[:3] for t in range(window_size - 1)]
-    return np.array(X_list), np.array(y_list), [f"mean_{n}" for n in base_names] + [f"std_{n}" for n in base_names] + delta_names
+    n_dt = window_size - 1
+    accel_delta_names = [f"delta_{n}_t{t}" for n in ["accel_x","accel_y","accel_z"] for t in range(n_dt)]
+    gyro_delta_names = [f"delta_{n}_t{t}" for n in ["gyro_x","gyro_y","gyro_z"] for t in range(n_dt)]
+    mag_delta_names = [f"delta_{n}_t{t}" for n in ["gyro_mag","accel_mag"] for t in range(n_dt)]
+    feature_names = (
+        [f"mean_{n}" for n in base_names]
+        + [f"std_{n}" for n in base_names]
+        + accel_delta_names
+        + gyro_delta_names
+        + mag_delta_names
+    )
+    return np.array(X_list), np.array(y_list), feature_names
 
 
 def main() -> None:

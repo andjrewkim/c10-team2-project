@@ -1,0 +1,16 @@
+{
+  "session": "20260727_173824",
+  "gestures": [
+    "bye-bye",
+    "clapping"
+  ],
+  "trials_per_gesture": 15,
+  "duration_s": 2.0,
+  "fps": 10,
+  "sensors": [
+    "imu"
+  ],
+  "mode": "serial",
+  "total_frames": 580,
+  "num_trials": 29
+}

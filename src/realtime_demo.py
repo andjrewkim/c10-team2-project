@@ -81,15 +81,25 @@ def _gather_readings(window: list[dict], name: str) -> list:
 def _compute_features(readings: list, sensor_type: str) -> list[float]:
     sensor_feats = np.array([extract_features_from_reading(r, sensor_type) for r in readings])
     if len(sensor_feats) == 0:
-        n = 6 + 6 + (3 * (len(readings) - 1)) if sensor_type == "imu" else 13
+        n = (6 + 2) + (6 + 2) + ((3 + 3 + 2) * (len(readings) - 1)) if sensor_type == "imu" else 13
         return [0.0] * n
 
     if sensor_type == "imu":
-        feats = np.array(sensor_feats)
-        accel_deltas = feats[1:, 0:3] - feats[:-1, 0:3]
+        # Augment base 6-channel vector with gyro_mag and accel_mag
+        accel = sensor_feats[:, 0:3]
+        gyro = sensor_feats[:, 3:6]
+        gyro_mag = np.sqrt(np.sum(gyro**2, axis=1, keepdims=True))
+        accel_mag = np.sqrt(np.sum(accel**2, axis=1, keepdims=True))
+        feats = np.concatenate([sensor_feats, gyro_mag, accel_mag], axis=1)  # (N, 8)
+
         out = list(np.mean(feats, axis=0))
         out.extend(np.std(feats, axis=0).tolist())
-        out.extend(accel_deltas.flatten().tolist())
+        # Accel deltas (3 channels, window-1 time steps)
+        out.extend((feats[1:, 0:3] - feats[:-1, 0:3]).flatten().tolist())
+        # Gyro deltas (3 channels, window-1 time steps)
+        out.extend((feats[1:, 3:6] - feats[:-1, 3:6]).flatten().tolist())
+        # Magnitude deltas (2 channels, window-1 time steps)
+        out.extend((feats[1:, 6:8] - feats[:-1, 6:8]).flatten().tolist())
         return out
     else:
         out = list(np.mean(sensor_feats, axis=0))
