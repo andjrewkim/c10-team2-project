@@ -107,6 +107,8 @@ def main() -> None:
                         help="Sensor mode")
     parser.add_argument("--imu_port", default="com13", help="IMU serial port")
     parser.add_argument("--mmwave_port", default="com12", help="mmWave serial port")
+    parser.add_argument("--uwb-ports", nargs="+", default=["/dev/ttyACM0"],
+                        help="Serial ports for UWB devices")
     parser.add_argument("--no-prompt", action="store_true",
                         help="Skip 'press enter' prompts (for automation)")
     args = parser.parse_args()
@@ -119,19 +121,34 @@ def main() -> None:
         cls = SENSOR_REGISTRY[name]
         if name == "mmwave":
             reader = cls(mode=args.mode)
+            reader.start()
+            reader_map[name] = reader
+            print(f"  Started {name} reader ({args.mode} mode)")
         elif name == "imu":
             reader = cls(mode=args.mode)
+            reader.start()
+            reader_map[name] = reader
+            print(f"  Started {name} reader ({args.mode} mode)")
         elif name == "uwb":
-            reader = cls(mode=args.mode)
+            for i, port in enumerate(args.uwb_ports):
+                reader = cls(mode=args.mode, serial_port=port, sensor_id=f"uwb-{i}")
+                reader.start()
+                reader_map[f"uwb_{i}"] = reader
+                print(f"  Started uwb_{i} reader ({args.mode} mode, port={port})")
         elif name == "wifi":
             reader = cls(mode=args.mode)
+            reader.start()
+            reader_map[name] = reader
+            print(f"  Started {name} reader ({args.mode} mode)")
         elif name == "rfid":
             reader = cls(mode=args.mode)
+            reader.start()
+            reader_map[name] = reader
+            print(f"  Started {name} reader ({args.mode} mode)")
         else:
             reader = cls()
-        reader.start()
-        reader_map[name] = reader
-        print(f"  Started {name} reader ({args.mode} mode)")
+            reader.start()
+            reader_map[name] = reader
 
     all_files: list[Path] = []
     try:

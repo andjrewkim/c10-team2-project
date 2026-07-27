@@ -54,6 +54,34 @@ def extract_imu_features(frame: dict) -> list[float]:
     return features
 
 
+def extract_uwb_features_from_data(data: dict) -> list[float]:
+    ranges = data.get("ranges_cm", [])
+    if not ranges:
+        return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    ranges_m = [r / 100.0 for r in ranges if isinstance(r, (int, float)) and r > 0]
+
+    if not ranges_m:
+        return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    return [
+        float(len(ranges_m)),
+        float(np.mean(ranges_m)),
+        float(np.std(ranges_m)) if len(ranges_m) > 1 else 0.0,
+        float(np.min(ranges_m)),
+        float(np.max(ranges_m)),
+        float(np.median(ranges_m)),
+    ]
+
+
+def _sensor_keys_of_type(frame: dict, sensor_type: str) -> list[str]:
+    skip_keys = {"timestamp", "gesture", "trial", "elapsed"}
+    return [
+        k for k, v in frame.items()
+        if k not in skip_keys and isinstance(v, dict) and v.get("sensor_type") == sensor_type
+    ]
+
+
 def extract_window_features(
     frames: list[dict],
     window_size: int = 10,
@@ -65,6 +93,7 @@ def extract_window_features(
 
     mmwave_sensors = any("mmwave" in f for f in frames)
     imu_sensors = any("imu" in f for f in frames)
+    uwb_keys = _sensor_keys_of_type(frames[0], "uwb") if frames else []
 
     if mmwave_sensors:
         feature_names.extend([
@@ -75,6 +104,11 @@ def extract_window_features(
         feature_names.extend([
             "imu_accel_x", "imu_accel_y", "imu_accel_z",
             "imu_gyro_x", "imu_gyro_y", "imu_gyro_z",
+        ])
+    for uk in uwb_keys:
+        feature_names.extend([
+            f"{uk}_num_ranges", f"{uk}_mean_range_m", f"{uk}_std_range_m",
+            f"{uk}_min_range_m", f"{uk}_max_range_m", f"{uk}_median_range_m",
         ])
 
     for i in range(0, len(frames) - window_size + 1, stride):
@@ -102,6 +136,12 @@ def extract_window_features(
             imu_features = np.array([extract_imu_features(f) for f in window])
             for col in range(imu_features.shape[1]):
                 features.append(float(np.mean(imu_features[:, col])))
+
+        for uk in uwb_keys:
+            uwb_data = [f.get(uk, {}).get("data", {}) for f in window]
+            uwb_feats = np.array([extract_uwb_features_from_data(d) for d in uwb_data])
+            for col in range(uwb_feats.shape[1]):
+                features.append(float(np.mean(uwb_feats[:, col])))
 
         X_list.append(features)
         y_list.append(gesture)

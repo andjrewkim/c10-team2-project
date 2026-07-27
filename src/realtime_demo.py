@@ -10,10 +10,18 @@ import numpy as np
 
 from src.sensors.imu_reader import ImuReader
 from src.sensors.mmwave_reader import MmWaveReader
+from src.sensors.uwb_reader import UwbReader
 
 SENSOR_REGISTRY = {
     "mmwave": MmWaveReader,
     "imu": ImuReader,
+    "uwb": UwbReader,
+}
+
+SENSOR_FEATURE_COUNTS = {
+    "mmwave": 10,
+    "imu": 6,
+    "uwb": 6,
 }
 
 
@@ -48,6 +56,23 @@ def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]
             float(gyro[1]) if len(gyro) > 1 else 0.0,
             float(gyro[2]) if len(gyro) > 2 else 0.0,
         ]
+    elif sensor_type == "uwb":
+        data = reading.data
+        ranges = data.get("ranges_cm", [])
+        raw_ranges = data.get("raw_ranges", [])
+        if not ranges:
+            ranges = raw_ranges
+        ranges_m = [r / 100.0 for r in ranges if isinstance(r, (int, float)) and r > 0]
+        if not ranges_m:
+            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        return [
+            float(len(ranges_m)),
+            float(np.mean(ranges_m)),
+            float(np.std(ranges_m)) if len(ranges_m) > 1 else 0.0,
+            float(np.min(ranges_m)),
+            float(np.max(ranges_m)),
+            float(np.median(ranges_m)),
+        ]
     return []
 
 
@@ -63,6 +88,8 @@ def main() -> None:
     parser.add_argument("--mode", default="mock",
                         choices=["mock", "serial"],
                         help="Sensor mode")
+    parser.add_argument("--uwb-ports", nargs="+", default=["/dev/ttyACM0"],
+                        help="Serial ports for UWB devices")
     parser.add_argument("--window", type=int, default=10,
                         help="Window size (matches training)")
     parser.add_argument("--stride", type=int, default=5,
@@ -91,13 +118,25 @@ def main() -> None:
 
     reader_map: dict[str, any] = {}
     sensor_types: dict[str, str] = {}
+    reader_keys: list[str] = []
     for name in args.sensors:
         cls = SENSOR_REGISTRY[name]
-        reader = cls(mode=args.mode)
-        reader.start()
-        reader_map[name] = reader
-        sensor_types[name] = reader.sensor_type
-        print(f"Started {name} reader ({args.mode} mode)")
+        if name == "uwb":
+            for i, port in enumerate(args.uwb_ports):
+                key = f"uwb_{i}"
+                reader = cls(mode=args.mode, serial_port=port, sensor_id=f"uwb-{i}")
+                reader.start()
+                reader_map[key] = reader
+                sensor_types[key] = "uwb"
+                reader_keys.append(key)
+                print(f"  Started {key} reader ({args.mode} mode, port={port})")
+        else:
+            reader = cls(mode=args.mode)
+            reader.start()
+            reader_map[name] = reader
+            sensor_types[name] = reader.sensor_type
+            reader_keys.append(name)
+            print(f"  Started {name} reader ({args.mode} mode)")
 
     frame_buffer: deque[dict] = deque(maxlen=args.window)
     frame_count = 0
@@ -122,7 +161,7 @@ def main() -> None:
                 window = list(frame_buffer)
 
                 features: list[float] = []
-                for name in args.sensors:
+                for name in reader_keys:
                     readings = [f[name] for f in window if name in f]
                     sensor_feats = []
                     for r in readings:
@@ -132,7 +171,7 @@ def main() -> None:
                         sensor_feats = np.array(sensor_feats)
                         features.extend(np.mean(sensor_feats, axis=0).tolist())
                     else:
-                        n_feats = 10 if sensor_types[name] == "mmwave" else 6
+                        n_feats = SENSOR_FEATURE_COUNTS.get(sensor_types[name], 6)
                         features.extend([0.0] * n_feats)
 
                 if len(features) > 0:

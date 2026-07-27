@@ -59,3 +59,7 @@ coverage/
 !**/.gitkeep
 
 /.freebuff
+
+# UWB lab tools (local copies, not part of repo)
+/UWB_lab/
+
