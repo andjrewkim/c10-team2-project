@@ -1,0 +1,18 @@
+{
+  "session": "20260727_030123",
+  "gestures": [
+    "push",
+    "pull",
+    "left",
+    "right"
+  ],
+  "trials_per_gesture": 10,
+  "duration_s": 2.0,
+  "fps": 10,
+  "sensors": [
+    "imu"
+  ],
+  "mode": "serial",
+  "total_frames": 760,
+  "num_trials": 40
+}

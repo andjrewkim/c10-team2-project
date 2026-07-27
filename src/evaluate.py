@@ -39,13 +39,23 @@ def main() -> None:
         return
 
     with open(model_path, "rb") as f:
-        pipeline = pickle.load(f)
+        raw = pickle.load(f)
+    if isinstance(raw, dict):
+        pipeline = raw["pipeline"]
+        gestures = raw.get("gestures", [])
+        label_map = raw.get("label_map", {})
+    else:
+        pipeline = raw
+        gestures = []
+        label_map = {}
 
     data = np.load(features_path, allow_pickle=True)
     X_test = data["X_test"]
     y_test = data["y_test"]
-    gestures = data["gestures"].tolist() if "gestures" in data else []
-    label_map = data["label_map"].item() if "label_map" in data else {}
+    if not gestures:
+        gestures = data["gestures"].tolist() if "gestures" in data else []
+    if not label_map:
+        label_map = data["label_map"].item() if "label_map" in data else {}
     int_to_label = {v: k for k, v in label_map.items()}
 
     print(f"Loaded model: {model_path}")

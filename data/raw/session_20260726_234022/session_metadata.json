@@ -1,0 +1,18 @@
+{
+  "session": "20260726_234022",
+  "gestures": [
+    "push",
+    "pull",
+    "left",
+    "right"
+  ],
+  "trials_per_gesture": 5,
+  "duration_s": 2.0,
+  "fps": 10,
+  "sensors": [
+    "imu"
+  ],
+  "mode": "mock",
+  "total_frames": 380,
+  "num_trials": 19
+}
