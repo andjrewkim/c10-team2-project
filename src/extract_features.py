@@ -24,7 +24,6 @@ def extract_mmwave_features(frame: dict) -> list[float]:
 
     if not points:
         return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0]
-        return [num_points, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     xs = np.array([p.get("x", 0) for p in points])
     ys = np.array([p.get("y", 0) for p in points])
@@ -35,7 +34,6 @@ def extract_mmwave_features(frame: dict) -> list[float]:
         float(np.std(xs)),
         float(np.mean(ys)),
         float(np.std(ys)),
-        float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)), # distance from center
         float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)),
     ]
 
@@ -104,6 +102,8 @@ def extract_window_features(
             mm_features = np.array([extract_mmwave_features(f) for f in window])
             for col in range(mm_features.shape[1]):
                 features.append(float(np.mean(mm_features[:, col])))
+            for col in range(mm_features.shape[1]):
+                features.append(float(np.std(mm_features[:, col])))
 
         if imu_sensors:
             imu_features = np.array([extract_imu_features(f) for f in window])
@@ -206,6 +206,32 @@ def main() -> None:
         return
     print(f"Loaded {len(frames)} frames")
 
+    mm = frames[0].get("mmwave", {})
+    d = mm.get("data", {}) if isinstance(mm, dict) else {}
+    pts = d.get("points", [])
+    print(f"\nFirst frame mmwave data keys: {list(d.keys())}")
+    print(f"  num_points: {d.get('num_points')}")
+    if pts:
+        print(f"  Sample point (first of {len(pts)}): {pts[0]}")
+        print(f"  Point keys: {list(pts[0].keys())}")
+    else:
+        print(f"  WARNING: No points in first frame — all features will be zero!")
+
+    empty_count = sum(1 for f in frames
+                      if not f.get("mmwave", {}).get("data", {}).get("points", []))
+    print(f"  Frames with empty points: {empty_count}/{len(frames)}")
+
+    mm = frames[0].get("mmwave", {})
+    d = mm.get("data", {}) if isinstance(mm, dict) else {}
+    pts = d.get("points", [])
+    print(f"\nFirst frame mmwave data keys: {list(d.keys())}")
+    print(f"  num_points: {d.get('num_points')}")
+    if pts:
+        print(f"  Sample point (first of {len(pts)}): {pts[0]}")
+        print(f"  Point keys: {list(pts[0].keys())}")
+    else:
+        print(f"  WARNING: No points in first frame — all features will be zero!")
+
     input_ts = None
     stem = input_path.stem if not input_path.is_dir() else input_path.name
     if stem.startswith("session_"):
@@ -223,6 +249,14 @@ def main() -> None:
     )
     print(f"\nExtracted {len(X)} windows with {len(feature_names)} features each")
     print(f"Feature names: {feature_names}")
+
+    unique_gestures, counts = np.unique(y, return_counts=True)
+    print(f"\nClass distribution:")
+    for g, c in zip(unique_gestures, counts):
+        idx = y == g
+        print(f"  {g} ({c} windows): "
+              f"feat0 mean={X[idx, 0].mean():.3f} std={X[idx, 0].std():.3f} — "
+              f"feat1 mean={X[idx, 1].mean():.3f} std={X[idx, 1].std():.3f}")
 
     gestures = sorted(set(y))
     label_map = {g: i for i, g in enumerate(gestures)}
