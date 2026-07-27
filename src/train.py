@@ -8,10 +8,15 @@ from pathlib import Path
 
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 CLASSIFIERS = {
     "random_forest": RandomForestClassifier(
@@ -50,6 +55,8 @@ def main() -> None:
     if not input_path.exists():
         print(f"Error: {input_path} not found. Run extract_features.py first.")
         return
+
+    data_ts = input_path.stem.removeprefix("features_")
 
     data = np.load(input_path, allow_pickle=True)
     X_train = data["X_train"]
@@ -108,6 +115,19 @@ def main() -> None:
         print(f"    Test accuracy:  {test_acc:.4f}")
         print(f"    Time:           {train_time:.3f}s")
 
+        y_pred = pipeline.predict(X_test)
+        cm = confusion_matrix(y_test, y_pred)
+        fig, ax = plt.subplots(figsize=(6, 5))
+        display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=gestures)
+        display.plot(ax=ax, cmap="Blues", colorbar=False)
+        ax.set_title(f"{name}\nTest accuracy: {test_acc:.3f}")
+        fig.tight_layout()
+        prefix = f"{args.output_name}_" if args.output_name else ""
+        cm_path = out_dir / f"{prefix}{name}_confusion_matrix_{data_ts}.png"
+        fig.savefig(cm_path, dpi=180)
+        plt.close(fig)
+        print(f"    Confusion matrix: {cm_path}")
+
         if test_acc > best_score:
             best_score = test_acc
             best_name = name
@@ -127,6 +147,19 @@ def main() -> None:
         print()
 
     if best_name and best_pipeline is not None:
+        y_pred = best_pipeline.predict(X_test)
+        cm = confusion_matrix(y_test, y_pred)
+        fig, ax = plt.subplots(figsize=(6, 5))
+        display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=gestures)
+        display.plot(ax=ax, cmap="Blues", colorbar=False)
+        ax.set_title(f"Best model: {best_name}\nTest accuracy: {best_score:.3f}")
+        fig.tight_layout()
+        prefix = f"{args.output_name}_" if args.output_name else ""
+        best_cm_path = out_dir / f"{prefix}best_model_confusion_matrix_{data_ts}.png"
+        fig.savefig(best_cm_path, dpi=180)
+        plt.close(fig)
+        print(f"    Best model confusion matrix: {best_cm_path}")
+
         model_data = {
             "pipeline": best_pipeline,
             "gestures": gestures,
