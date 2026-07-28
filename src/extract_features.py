@@ -225,7 +225,7 @@ def main() -> None:
                         help="Session folder, combined CSV, combined JSON, or JSONL")
     parser.add_argument("--output", default="data/processed",
                         help="Output directory for feature matrices")
-    parser.add_argument("--window", type=int, default=10,
+    parser.add_argument("--window", type=int, default=2,
                         help="Sliding window size in frames")
     parser.add_argument("--stride", type=int, default=5,
                         help="Window stride in frames")
