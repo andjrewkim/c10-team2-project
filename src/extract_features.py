@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split
 
 
 MM_FEATURE_NAMES = [
-    "num_points", "mean_x", "std_x", "mean_y", "std_y", "mean_range",
+    "num_points", "mean_x", "std_x", "mean_y", "std_y", "raw_range_profile", "mean_range"
 ]
 
 
@@ -21,6 +21,7 @@ def extract_mmwave_features(frame: dict) -> list[float]:
     data = mm.get("data", {})
     points = data.get("points", [])
     num_points = data.get("num_points", len(points))
+    range_profile = data.get("range_profile", [])
 
     if not points:
         return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -55,6 +56,34 @@ def extract_imu_features(frame: dict) -> list[float]:
     return features
 
 
+def extract_uwb_features_from_data(data: dict) -> list[float]:
+    ranges = data.get("ranges_cm", [])
+    if not ranges:
+        return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    ranges_m = [r / 100.0 for r in ranges if isinstance(r, (int, float)) and r > 0]
+
+    if not ranges_m:
+        return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    return [
+        float(len(ranges_m)),
+        float(np.mean(ranges_m)),
+        float(np.std(ranges_m)) if len(ranges_m) > 1 else 0.0,
+        float(np.min(ranges_m)),
+        float(np.max(ranges_m)),
+        float(np.median(ranges_m)),
+    ]
+
+
+def _sensor_keys_of_type(frame: dict, sensor_type: str) -> list[str]:
+    skip_keys = {"timestamp", "gesture", "trial", "elapsed"}
+    return [
+        k for k, v in frame.items()
+        if k not in skip_keys and isinstance(v, dict) and v.get("sensor_type") == sensor_type
+    ]
+
+
 def _total_path_length(frames: list[dict]) -> float:
     cents = []
     for f in frames:
@@ -83,6 +112,7 @@ def extract_window_features(
 
     mmwave_sensors = any("mmwave" in f for f in frames)
     imu_sensors = any("imu" in f for f in frames)
+    uwb_keys = _sensor_keys_of_type(frames[0], "uwb") if frames else []
 
     if mmwave_sensors:
         feature_names.extend([f"mm_mean_{n}" for n in MM_FEATURE_NAMES])
@@ -92,6 +122,11 @@ def extract_window_features(
         imu_base = ["accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"]
         feature_names.extend([f"imu_mean_{b}" for b in imu_base])
         feature_names.extend([f"imu_std_{b}" for b in imu_base])
+    for uk in uwb_keys:
+        feature_names.extend([
+            f"{uk}_num_ranges", f"{uk}_mean_range_m", f"{uk}_std_range_m",
+            f"{uk}_min_range_m", f"{uk}_max_range_m", f"{uk}_median_range_m",
+        ])
 
     for i in range(0, len(frames) - window_size + 1, stride):
         window = frames[i:i + window_size]
@@ -111,6 +146,12 @@ def extract_window_features(
                 features.append(float(np.mean(imu_features[:, col])))
             for col in range(imu_features.shape[1]):
                 features.append(float(np.std(imu_features[:, col])))
+
+        for uk in uwb_keys:
+            uwb_data = [f.get(uk, {}).get("data", {}) for f in window]
+            uwb_feats = np.array([extract_uwb_features_from_data(d) for d in uwb_data])
+            for col in range(uwb_feats.shape[1]):
+                features.append(float(np.mean(uwb_feats[:, col])))
 
         X_list.append(features)
         y_list.append(gesture)
@@ -185,7 +226,7 @@ def main() -> None:
                         help="Session folder, combined CSV, combined JSON, or JSONL")
     parser.add_argument("--output", default="data/processed",
                         help="Output directory for feature matrices")
-    parser.add_argument("--window", type=int, default=10,
+    parser.add_argument("--window", type=int, default=2,
                         help="Sliding window size in frames")
     parser.add_argument("--stride", type=int, default=5,
                         help="Window stride in frames")

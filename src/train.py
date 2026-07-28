@@ -72,7 +72,7 @@ def main() -> None:
     print(f"Classes:       {len(gestures)} ({', '.join(gestures)})")
     print()
 
-    out_dir = Path(args.output)
+    out_dir = Path(args.output) / f"train_{data_ts}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results = {}
@@ -120,6 +120,7 @@ def main() -> None:
         fig, ax = plt.subplots(figsize=(6, 5))
         display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=gestures)
         display.plot(ax=ax, cmap="Blues", colorbar=False)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
         ax.set_title(f"{name}\nTest accuracy: {test_acc:.3f}")
         fig.tight_layout()
         prefix = f"{args.output_name}_" if args.output_name else ""
@@ -152,6 +153,7 @@ def main() -> None:
         fig, ax = plt.subplots(figsize=(6, 5))
         display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=gestures)
         display.plot(ax=ax, cmap="Blues", colorbar=False)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
         ax.set_title(f"Best model: {best_name}\nTest accuracy: {best_score:.3f}")
         fig.tight_layout()
         prefix = f"{args.output_name}_" if args.output_name else ""

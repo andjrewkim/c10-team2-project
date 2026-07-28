@@ -720,6 +720,7 @@ def main() -> None:
     features_list = _resolve_features(args.features, args.sensor)
 
     if args.mode == "overlay":
+        field = args.field if args.field != "all" else "centroid_y"
         by_gesture: dict[str, list[dict]] = {}
         for name, frames in filtered_frames.items():
             g = frames[0].get("gesture", "?")

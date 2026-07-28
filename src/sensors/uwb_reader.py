@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import numpy as np
+
 from src.sensors.base_reader import BaseReader, Reading
 from src.sensors.drivers.uwb import UwbAnchorSensor
 
@@ -35,18 +37,34 @@ class UwbReader(BaseReader):
                 data={"ranges_cm": [], "position": None},
                 confidence=0.0,
             )
-        obs = obs_list[0]
-        o = obs.observation or {}
+
+        ranges_cm: list[float] = []
+        position: dict[str, float] | None = None
+        confidences: list[float] = []
+
+        for obs in obs_list:
+            o = obs.observation or {}
+            confidences.append(obs.confidence)
+
+            if o.get("ranges_cm"):
+                ranges_cm.extend(o["ranges_cm"])
+            elif o.get("range_m") is not None:
+                ranges_cm.append(float(o["range_m"]) * 100.0)
+
+            if o.get("position") and position is None:
+                position = o["position"]
+            if obs.position and position is None:
+                position = obs.position
+
         return Reading(
             sensor_id=self.sensor_id,
             sensor_type=self.sensor_type,
-            timestamp=obs.timestamp,
+            timestamp=obs_list[0].timestamp,
             data={
-                "ranges_cm": o.get("ranges_cm", []),
-                "position": o.get("position"),
-                "raw_ranges": o.get("raw_ranges", []),
+                "ranges_cm": ranges_cm,
+                "position": position,
             },
-            confidence=obs.confidence,
+            confidence=float(np.mean(confidences)) if confidences else 0.0,
         )
 
     def stop(self) -> None:
