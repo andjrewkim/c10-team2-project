@@ -1,0 +1,16 @@
+{
+  "session": "20260728_025509",
+  "gestures": [
+    "one-arm-boxing",
+    "two-arm-boxing"
+  ],
+  "trials_per_gesture": 15,
+  "duration_s": 3.0,
+  "fps": 20.0,
+  "sensors": [
+    "imu"
+  ],
+  "mode": "serial",
+  "total_frames": 1679,
+  "num_trials": 30
+}
