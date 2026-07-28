@@ -235,10 +235,10 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
             if observe_until is not None:
                 if frame_count >= observe_until:
                     if punch_count >= 2:
-                        print(f"> one-arm-boxing  ({punch_count} punches)")
+                        print("> one-arm-boxing")
                         displayed = "one-arm-boxing"
                     else:
-                        print(f"> two-arm-boxing  ({punch_count} punch)")
+                        print("> two-arm-boxing")
                         displayed = "two-arm-boxing"
                     display_age = 0
                     challenge_count = 0
@@ -469,11 +469,11 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     if frame_count >= observe_until:
                         if punch_count >= 2:
                             gesture_label.config(text="ONE-ARM-BOXING", fg=colors["success"])
-                            conf_label.config(text=f"{punch_count} punches", fg=colors["fg"])
+                            conf_label.config(text="", fg=colors["fg"])
                             displayed = "one-arm-boxing"
                         else:
                             gesture_label.config(text="TWO-ARM-BOXING", fg=colors["success"])
-                            conf_label.config(text=f"{punch_count} punch", fg=colors["fg"])
+                            conf_label.config(text="", fg=colors["fg"])
                             displayed = "two-arm-boxing"
                         info.config(text="")
                         observe_until = None
@@ -548,7 +548,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             was_in_punch = False
                             punch_cooldown = 0
                             gesture_label.config(text="OBSERVING...", fg=colors["warn"])
-                            conf_label.config(text="counting punches", fg=colors["fg"])
+                            conf_label.config(text="", fg=colors["fg"])
                         else:
                             gesture_label.config(text=smoothed.upper(), fg=colors["success"])
                             conf_label.config(text=f"conf={conf:.2f}", fg=colors["fg"])
