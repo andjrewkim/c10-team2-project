@@ -316,8 +316,8 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                     punch_cooldown -= 1
                 elif in_punch and not was_in_punch:
                     punch_count += 1
-                    punch_cooldown = 10
-                was_in_punch = in_punch
+                    punch_cooldown = args.punch_cooldown
+                    was_in_punch = in_punch
 
             if current_accel is not None:
                 prev_accel = current_accel[:]
@@ -400,6 +400,13 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                         if movement < args.min_boxing_movement:
                             if args.debug:
                                 print(f"  ⚠ ignoring boxing — low movement ({movement:.3f} < {args.min_boxing_movement})")
+                            # Fall through: show the model's prediction anyway
+                            print(f"> {smoothed}  (conf={conf:.2f}, low mvmt)")
+                            displayed = smoothed
+                            display_age = 0
+                            challenge_count = 0
+                            challenge_label = None
+                            hold_counter = max_hold_frames
                         else:
                             observe_until = frame_count + args.boxing_delay_frames
                             punch_count = 0
@@ -709,7 +716,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         punch_cooldown -= 1
                     elif in_punch and not was_in_punch:
                         punch_count += 1
-                        punch_cooldown = 10
+                        punch_cooldown = args.punch_cooldown
                     was_in_punch = in_punch
 
                 if current_accel is not None:
@@ -797,7 +804,14 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     if challenge_count >= args.change_frames:
                         if smoothed in ("one-arm-boxing", "two-arm-boxing"):
                             if movement < args.min_boxing_movement:
-                                error_label.config(text=f"blocked boxing — low movement ({movement:.2f} < {args.min_boxing_movement})", fg=PALETTE["warn"])
+                                error_label.config(text=f"{smoothed} (low movement: {movement:.2f})", fg=PALETTE["warn"])
+                                display_upper = smoothed.upper()
+                                gesture_label.config(text=display_upper, fg=PALETTE["warn"])
+                                displayed = smoothed
+                                display_age = 0
+                                challenge_count = 0
+                                challenge_label = None
+                                hold_counter = max_hold_frames
                             else:
                                 observe_until = frame_count + args.boxing_delay_frames
                                 punch_count = 0
@@ -860,22 +874,24 @@ def main() -> None:
                         help="Serial ports for UWB devices")
     parser.add_argument("--window", type=int, default=5,
                         help="Window size (matches training)")
-    parser.add_argument("--idle-threshold", type=float, default=0.4,
-                        help="Movement score below this = idle")
-    parser.add_argument("--min-conf", type=float, default=0.65,
-                        help="Minimum prediction confidence to accept")
+    parser.add_argument("--idle-threshold", type=float, default=0.45,
+                        help="Movement score below this = idle (default: 0.45)")
+    parser.add_argument("--min-conf", type=float, default=0.68,
+                        help="Minimum prediction confidence to accept (default: 0.68)")
     parser.add_argument("--smooth", type=int, default=10,
                         help="Smoothing buffer size (majority vote over last N frames)")
     parser.add_argument("--min-vote", type=int, default=3,
                         help="Minimum frames in buffer before showing prediction")
-    parser.add_argument("--change-frames", type=int, default=5,
-                        help="Require new label to dominate this many consecutive frames before switching")
+    parser.add_argument("--change-frames", type=int, default=6,
+                        help="Require new label to dominate this many consecutive frames before switching (default: 6)")
     parser.add_argument("--gui", action="store_true",
                         help="Show prediction GUI window")
     parser.add_argument("--punch-threshold", type=float, default=1.0,
                         help="Per-frame accel delta threshold for detecting a punch (default: 1.0)")
+    parser.add_argument("--punch-cooldown", type=int, default=10,
+                        help="Frames to wait between consecutive punch detections (default: 10)")
     parser.add_argument("--boxing-delay-frames", type=int, default=60,
-                        help="Frames to observe after boxing is detected before classifying one-arm vs two-arm (default: 40)")
+                        help="Frames to observe after boxing is detected before classifying one-arm vs two-arm (default: 60)")
     parser.add_argument("--min-boxing-movement", type=float, default=0.8,
                         help="Minimum movement score to trigger boxing observation (default: 0.8)")
     parser.add_argument("--accel-gain", type=float, default=1.05,
