@@ -408,6 +408,8 @@ def main() -> None:
         # specify a field if using --mode overlay, compare, or consistency
     parser.add_argument("--gesture", default=None,
                         help="Filter to one gesture (for mmwave/imu/consistency modes)")
+    parser.add_argument("--no-details", action="store_true",
+                        help="With --mode stats, skip per-trial detail output (gesture summary only)")
     args = parser.parse_args()
 
     path = Path(args.input)
@@ -520,6 +522,61 @@ def main() -> None:
     if args.mode == "consistency":
         gesture_name = args.gesture or list(filtered_frames.values())[0][0].get("gesture", "?")
         consistency_gesture(filtered_frames, gesture_name, args.field, session_ts=session_ts)
+        return
+
+    if args.mode == "stats":
+        by_gesture: dict[str, list[tuple[str, list[dict]]]] = {}
+        for name, frames in filtered_frames.items():
+            g = frames[0].get("gesture", "?")
+            by_gesture.setdefault(g, []).append((name, frames))
+
+        for gesture_name, trials in sorted(by_gesture.items()):
+            trial_n = []
+            trial_dur = []
+            trial_fps = []
+            all_dt = []
+
+            for trial_name, frames in trials:
+                elapsed = np.array([f.get("elapsed", 0.0) for f in frames])
+                n = len(frames)
+                if n < 2:
+                    continue
+                dur = elapsed[-1] - elapsed[0]
+                fps = n / dur if dur > 0 else 0.0
+                dt = np.diff(elapsed) * 1000  # ms
+
+                trial_n.append(n)
+                trial_dur.append(dur)
+                trial_fps.append(fps)
+                all_dt.extend(dt)
+
+            if not trial_n:
+                continue
+
+            print(f"\n{'='*60}")
+            print(f"Gesture: {gesture_name}")
+            print(f"  Trials: {len(trials)}")
+            print(f"  Frames per trial: mean={np.mean(trial_n):.1f}  median={np.median(trial_n):.0f}  min={min(trial_n)}  max={max(trial_n)}")
+            print(f"  Duration per trial (s): mean={np.mean(trial_dur):.2f}  median={np.median(trial_dur):.2f}  min={min(trial_dur):.2f}  max={max(trial_dur):.2f}")
+
+            if not args.no_details:
+                print(f"\n  Trial details:")
+                for trial_name, frames in trials:
+                    elapsed = np.array([f.get("elapsed", 0.0) for f in frames])
+                    n = len(frames)
+                    if n < 2:
+                        print(f"    {trial_name}: {n} frames (too few for timing)")
+                        continue
+                    dur = elapsed[-1] - elapsed[0]
+                    fps = n / dur if dur > 0 else 0.0
+                    dt = np.diff(elapsed) * 1000
+
+                    print(f"    {trial_name}:")
+                    print(f"      Frames: {n}")
+                    print(f"      Duration: {dur:.2f}s")
+                    print(f"      Avg frame rate: {fps:.1f} fps")
+                    print(f"      Δt (ms): min={dt.min():.1f}  max={dt.max():.1f}  mean={dt.mean():.1f}  std={dt.std():.1f}")
+
         return
 
     for name, frames in filtered_frames.items():
