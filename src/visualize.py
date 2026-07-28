@@ -325,6 +325,8 @@ def consistency_gesture(frames_by_trial: dict[str, list[dict]], gesture: str, fe
         all_aligned = []
         for t_idx, frames in enumerate(trials):
             ts = extract_mmwave_timeseries(frames, max_frames)
+            if np.all(ts["num_points"] == 0):
+                continue
             vals = ts.get(feat, np.zeros(max_frames))
             aligned = _resample_to_target(vals, max_frames)
             all_aligned.append(aligned)
@@ -349,6 +351,65 @@ def consistency_gesture(frames_by_trial: dict[str, list[dict]], gesture: str, fe
     _safe_save(fig, gesture, "mmwave", f"consistency_{feature}", session_ts)
     plt.tight_layout()
     plt.show()
+
+
+def consistency_multi_gestures(frames_by_trial: dict[str, list[dict]], field: str, max_frames: int = 200, session_ts: str | None = None) -> None:
+    import matplotlib.pyplot as plt
+
+    by_gesture: dict[str, list[list[dict]]] = {}
+    for key, frames in frames_by_trial.items():
+        g = frames[0].get("gesture", "?")
+        ts = extract_mmwave_timeseries(frames, max_frames)
+        if np.all(ts["num_points"] == 0):
+            continue
+        by_gesture.setdefault(g, []).append(frames)
+
+    if not by_gesture:
+        print("No gestures with mmWave data found")
+        return
+
+    gestures_sorted = sorted(by_gesture.keys())
+    all_features = ["centroid_x", "centroid_y", "num_points", "body_width", "body_depth"]
+    features_to_plot = all_features if field == "all" else [field]
+
+    n_gestures = len(gestures_sorted)
+    n_features = len(features_to_plot)
+    fig, axs = plt.subplots(n_gestures, n_features, figsize=(8 * n_features + 2, 3 * n_gestures), constrained_layout=True)
+    if n_gestures == 1 and n_features == 1:
+        axs = np.array([[axs]])
+    elif n_gestures == 1:
+        axs = axs.reshape(1, -1)
+    elif n_features == 1:
+        axs = axs.reshape(-1, 1)
+
+    for i, gesture in enumerate(gestures_sorted):
+        trials = by_gesture[gesture]
+        for j, feat in enumerate(features_to_plot):
+            ax = axs[i, j]
+            all_aligned = []
+            for frames in trials:
+                ts = extract_mmwave_timeseries(frames, max_frames)
+                vals = ts.get(feat, np.zeros(max_frames))
+                aligned = _resample_to_target(vals, max_frames)
+                all_aligned.append(aligned)
+                ax.plot(aligned, alpha=0.3, linewidth=0.8)
+            if all_aligned:
+                mean_curve = np.mean(all_aligned, axis=0)
+                std_curve = np.std(all_aligned, axis=0)
+                t_axis = np.arange(max_frames)
+                ax.plot(t_axis, mean_curve, color="black", linewidth=2)
+                ax.fill_between(t_axis, mean_curve - std_curve, mean_curve + std_curve, color="black", alpha=0.1)
+            if i == 0:
+                ax.set_title(feat, fontsize=20, fontweight="bold")
+            if j == 0:
+                ax.set_ylabel(gesture, fontsize=20, fontweight="bold")
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=11)
+
+    fig.suptitle(f"mmWave consistency — all gestures ({field})", fontsize=24)
+    _safe_save(fig, "all_gestures", "mmwave", f"consistency_{field}", session_ts)
+    print(f"  Figure too large for screen — open saved PNG to scroll")
+    plt.close(fig)
 
 
 def overlay_comparison(frames_by_gesture: dict[str, list[dict]], sensor: str, field: str, max_frames: int = 100, session_ts: str | None = None) -> None:
@@ -402,12 +463,13 @@ def main() -> None:
         # overlay: Plots all gestures concatenated (all trials merged) as separate lines on one axis
         # compare: Plots one feature with one line per gesture (mean ± std across trials, resampled to same length)
         # consistency: Plots all trials of one gesture overlaid (each trial = faint line, black = mean ± std)
-    parser.add_argument("--field", default="centroid_y",
-                        help="Feature field (centroid_x, centroid_y, num_points, body_width, body_depth)")
+    parser.add_argument("--field", default="all",
+                        help="Feature field (centroid_x, centroid_y, num_points, body_width, body_depth, or all)")
     """field argument"""
         # specify a field if using --mode overlay, compare, or consistency
+        # "all" shows all features (consistency mode only)
     parser.add_argument("--gesture", default=None,
-                        help="Filter to one gesture (for mmwave/imu/consistency modes)")
+                        help="Filter to one gesture (default: all)")
     parser.add_argument("--no-details", action="store_true",
                         help="With --mode stats, skip per-trial detail output (gesture summary only)")
     args = parser.parse_args()
@@ -505,6 +567,7 @@ def main() -> None:
     for name, frames in filtered_frames.items():
         print(f"  {name}: {len(frames)} frames")
     if args.mode == "overlay":
+        field = args.field if args.field != "all" else "centroid_y"
         by_gesture: dict[str, list[dict]] = {}
         for name, frames in filtered_frames.items():
             g = frames[0].get("gesture", "?")
@@ -514,14 +577,17 @@ def main() -> None:
             if "imu" in f:
                 sensor = "imu"
                 break
-        overlay_comparison(by_gesture, sensor, args.field, session_ts=session_ts)
+        overlay_comparison(by_gesture, sensor, field, session_ts=session_ts)
         return
     if args.mode == "compare":
-        compare_gestures(filtered_frames, args.field, session_ts=session_ts)
+        field = args.field if args.field != "all" else "centroid_y"
+        compare_gestures(filtered_frames, field, session_ts=session_ts)
         return
     if args.mode == "consistency":
-        gesture_name = args.gesture or list(filtered_frames.values())[0][0].get("gesture", "?")
-        consistency_gesture(filtered_frames, gesture_name, args.field, session_ts=session_ts)
+        if args.gesture:
+            consistency_gesture(filtered_frames, args.gesture, args.field, session_ts=session_ts)
+        else:
+            consistency_multi_gestures(filtered_frames, args.field, session_ts=session_ts)
         return
 
     if args.mode == "stats":
