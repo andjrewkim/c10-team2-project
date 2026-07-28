@@ -1,0 +1,17 @@
+{
+  "session": "20260728_023725",
+  "gestures": [
+    "t-arm",
+    "raise-arms",
+    "palm-up-down"
+  ],
+  "trials_per_gesture": 15,
+  "duration_s": 3.0,
+  "fps": 20.0,
+  "sensors": [
+    "imu"
+  ],
+  "mode": "serial",
+  "total_frames": 2519,
+  "num_trials": 45
+}

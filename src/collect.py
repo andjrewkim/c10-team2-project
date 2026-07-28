@@ -394,11 +394,12 @@ def collect_gesture(
     duration_s: float,
     fps: float,
     trial: int = 0,
+    total_trials: int = 1,
     prompt: bool = True,
 ) -> list[dict[str, Any]]:
     frames: list[dict[str, Any]] = []
 
-    print(f"  Recording '{gesture}' trial {trial} for {duration_s}s...")
+    print(f"  Recording '{gesture}' trial {trial + 1}/{total_trials} for {duration_s}s...")
     if gesture != "none" and prompt:
         input(f"  Press Enter when ready to perform '{gesture}'...")
 
@@ -552,7 +553,7 @@ def main() -> None:
                 trial_start_ts = datetime.now(timezone.utc).isoformat()
                 frames = collect_gesture(
                     reader_map, gesture, args.duration,
-                    args.fps, trial_num,
+                    args.fps, trial_num, total_trials=args.trials,
                     prompt=not args.no_prompt,
                 )
                 trial_end_ts = datetime.now(timezone.utc).isoformat()
@@ -596,6 +597,8 @@ def main() -> None:
 
                 total_frames += len(frames)
                 trial_index += 1
+
+        print("=" * 60)
 
     finally:
         for name, reader in reader_map.items():

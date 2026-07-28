@@ -1,0 +1,15 @@
+{
+  "session": "20260728_072020",
+  "gestures": [
+    "soli"
+  ],
+  "trials_per_gesture": 15,
+  "duration_s": 3.0,
+  "fps": 10,
+  "sensors": [
+    "mmwave"
+  ],
+  "mode": "mock",
+  "total_frames": 435,
+  "num_trials": 15
+}

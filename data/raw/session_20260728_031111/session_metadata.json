@@ -1,0 +1,16 @@
+{
+  "session": "20260728_031111",
+  "gestures": [
+    "soli",
+    "making-fist-open"
+  ],
+  "trials_per_gesture": 1,
+  "duration_s": 0.5,
+  "fps": 10,
+  "sensors": [
+    "mmwave"
+  ],
+  "mode": "serial",
+  "total_frames": 10,
+  "num_trials": 2
+}
