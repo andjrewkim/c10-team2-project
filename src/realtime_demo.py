@@ -24,6 +24,11 @@ SENSOR_FEATURE_COUNTS = {
     "uwb": 6,
 }
 
+# IMU processing parameters (set from CLI args before starting)
+_gyro_gain: float = 1.0
+_gyro_deadband: float = 0.0
+_accel_gain: float = 1.0
+
 
 def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]:
     if sensor_type == "mmwave":
@@ -44,14 +49,26 @@ def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]
         data = reading.data
         accel = data.get("accel", [0, 0, 0])
         gyro = data.get("gyro", [0, 0, 0])
-        return [
-            float(accel[0]) if len(accel) > 0 else 0.0,
-            float(accel[1]) if len(accel) > 1 else 0.0,
-            float(accel[2]) if len(accel) > 2 else 0.0,
-            float(gyro[0]) if len(gyro) > 0 else 0.0,
-            float(gyro[1]) if len(gyro) > 1 else 0.0,
-            float(gyro[2]) if len(gyro) > 2 else 0.0,
-        ]
+        gx = float(gyro[0]) if len(gyro) > 0 else 0.0
+        gy = float(gyro[1]) if len(gyro) > 1 else 0.0
+        gz = float(gyro[2]) if len(gyro) > 2 else 0.0
+        ax = float(accel[0]) if len(accel) > 0 else 0.0
+        ay = float(accel[1]) if len(accel) > 1 else 0.0
+        az = float(accel[2]) if len(accel) > 2 else 0.0
+        # Apply gains & deadband (set via CLI args)
+        ax *= _accel_gain
+        ay *= _accel_gain
+        az *= _accel_gain
+        gx *= _gyro_gain
+        gy *= _gyro_gain
+        gz *= _gyro_gain
+        if abs(gx) < _gyro_deadband:
+            gx = 0.0
+        if abs(gy) < _gyro_deadband:
+            gy = 0.0
+        if abs(gz) < _gyro_deadband:
+            gz = 0.0
+        return [ax, ay, az, gx, gy, gz]
     elif sensor_type == "uwb":
         data = reading.data
         ranges = data.get("ranges_cm", [])
@@ -173,6 +190,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     movement_history: deque[float] = deque(maxlen=5)
     min_display_frames = 5
     display_age = 0
+    # Observation mode state (boxing type discrimination)
     observe_until: int | None = None
     punch_count = 0
     prev_accel: list[float] | None = None
@@ -219,6 +237,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
 
             is_idle = movement < args.idle_threshold
 
+            # ── boxing observation: count punches, determine type ──
             if observe_until is not None and current_accel is not None and prev_accel is not None:
                 delta = sum(abs(current_accel[i] - prev_accel[i]) for i in range(3))
                 in_punch = delta > args.punch_threshold
@@ -235,20 +254,27 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
             if observe_until is not None:
                 if frame_count >= observe_until:
                     if punch_count >= 2:
-                        print("> one-arm-boxing")
                         displayed = "one-arm-boxing"
+                        print("> one-arm-boxing")
                     else:
-                        print("> two-arm-boxing")
                         displayed = "two-arm-boxing"
+                        print("> two-arm-boxing")
                     display_age = 0
                     challenge_count = 0
                     challenge_label = None
                     hold_counter = max_hold_frames
+                    # reset observation state
                     observe_until = None
                     punch_count = 0
                     was_in_punch = False
                     punch_cooldown = 0
+                    time.sleep(0.02)
+                    continue
+                else:
+                    time.sleep(0.02)
+                    continue
 
+            # ── idle ──
             if is_idle:
                 if displayed is not None:
                     if hold_counter > 0:
@@ -267,9 +293,6 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                 continue
 
             hold_counter = max_hold_frames
-
-            if observe_until is not None:
-                continue
 
             try:
                 label, conf = _predict(pipeline, gestures, features)
@@ -324,13 +347,14 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
 
 
 def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_types):
+    """Clean realtime GUI — resizable, fullscreen, no-nonsense."""
     try:
         import tkinter as tk
-        from tkinter import ttk
     except ImportError:
         print("--gui requires tkinter (install python-tk)")
         return
 
+    # ── state variables ──────────────────────────────────────────────
     frame_buffer = deque(maxlen=args.window)
     smooth_buffer: deque[str] = deque(maxlen=args.smooth)
     frame_count = 0
@@ -344,74 +368,172 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     min_display_frames = 5
     display_age = 0
     dims_warned = False
+    # Observation mode state (boxing type discrimination)
     observe_until: int | None = None
     punch_count = 0
     prev_accel: list[float] | None = None
     was_in_punch = False
     punch_cooldown = 0
+    active_start: float | None = None
+    total_active_time = 0.0
+    fps_samples: deque[float] = deque(maxlen=60)
+    last_fps_time: float | None = None
+    idle_start: float | None = None
 
-    root = tk.Tk()
-    root.title("Gesture Demo")
-    root.geometry("520x480")
-    root.configure(bg="#1e1e2e")
-
-    colors = {
-        "bg": "#1e1e2e", "fg": "#cdd6f4", "accent": "#89b4fa",
-        "success": "#a6e3a1", "warn": "#f9e2af", "surface": "#313244",
+    # ── colour palette (plain data-science) ─────────────────────────
+    PALETTE = {
+        "bg": "#0d0d10",
+        "fg": "#d4d4dc",
+        "fg_dim": "#6a6a72",
+        "fg_muted": "#4a4a52",
+        "accent": "#4a7cbf",
+        "success": "#5a9a6a",
+        "warn": "#b89a3a",
     }
 
-    gesture_font = ("Helvetica", 64, "bold")
-    conf_font = ("Helvetica", 18)
-    status_font = ("Helvetica", 14)
-    small_font = ("Helvetica", 11)
-    tiny_font = ("Helvetica", 9)
+    # ── fonts (plain) ───────────────────────────────────────────────
+    FONTS = {
+        "mono": ("Courier", 11),
+        "mono_small": ("Courier", 10),
+        "mono_tiny": ("Courier", 9),
+    }
 
-    gesture_label = tk.Label(root, text="—", font=gesture_font,
-                             fg=colors["accent"], bg=colors["bg"])
-    gesture_label.pack(pady=(40, 0))
+    # ── root window ─────────────────────────────────────────────────
+    root = tk.Tk()
+    root.title("REALTIME GESTURE CLASSIFIER")
+    root.geometry("800x620")
+    root.configure(bg=PALETTE["bg"])
+    root.resizable(True, True)
+    root.minsize(600, 450)
 
-    conf_label = tk.Label(root, text="", font=conf_font,
-                          fg=colors["fg"], bg=colors["bg"])
-    conf_label.pack(pady=(5, 0))
+    # fullscreen state
+    _fullscreen = [False]
 
-    movement_frame = tk.Frame(root, bg=colors["bg"])
-    movement_frame.pack(pady=(15, 0), padx=60, fill="x")
-    tk.Label(movement_frame, text="Movement:", font=small_font,
-             fg=colors["fg"], bg=colors["bg"]).pack(anchor="w")
-    movement_bar = ttk.Progressbar(movement_frame, length=400, mode="determinate", maximum=50)
-    movement_bar.pack(fill="x", pady=(2, 0))
-    movement_text = tk.Label(movement_frame, text="", font=small_font,
-                             fg=colors["fg"], bg=colors["bg"], anchor="e")
-    movement_text.pack(anchor="e")
+    def _toggle_fullscreen(event=None):
+        _fullscreen[0] = not _fullscreen[0]
+        root.attributes("-fullscreen", _fullscreen[0])
+        if not _fullscreen[0]:
+            root.geometry("800x620")
 
-    last_frame = tk.Label(root, text="", font=small_font,
-                          fg=colors["fg"], bg=colors["bg"])
-    last_frame.pack(pady=(8, 0))
+    root.bind("<F11>", _toggle_fullscreen)
 
-    sensor_data_label = tk.Label(root, text="sensor: —", font=tiny_font,
-                                 fg="#6c7086", bg=colors["bg"])
-    sensor_data_label.pack(pady=(0, 2))
+    # ── top bar ──────────────────────────────────────────────────────
+    top = tk.Frame(root, bg=PALETTE["bg"])
+    top.pack(fill="x", padx=16, pady=(10, 2))
 
-    status_led = tk.Label(root, text="○", font=("Helvetica", 14),
-                          fg="#6c7086", bg=colors["bg"])
-    status_led.place(relx=0.95, rely=0.03, anchor="ne")
+    tk.Label(top, text="● REAL-TIME GESTURE CLASSIFIER", font=("Helvetica", 9, "bold"),
+             fg=PALETTE["accent"], bg=PALETTE["bg"]).pack(side="left")
+    tk.Label(top, text="v1",
+             font=("Helvetica", 8), fg=PALETTE["fg_dim"], bg=PALETTE["bg"]).pack(side="right")
 
-    info = tk.Label(root, text="Make a gesture", font=tiny_font,
-                    fg="#6c7086", bg=colors["bg"])
-    info.pack(side="bottom", pady=(0, 8))
+    # thin rule
+    rule = tk.Frame(root, height=1, bg=PALETTE["fg_muted"])
+    rule.pack(fill="x", padx=16, pady=(4, 8))
 
-    error_label = tk.Label(root, text="", font=tiny_font,
-                           fg=colors["warn"], bg=colors["bg"], wraplength=480)
-    error_label.pack(side="bottom", pady=(0, 4))
+    # ── main content area (single centered column) ──────────────────
+    main = tk.Frame(root, bg=PALETTE["bg"])
+    main.pack(fill="both", expand=True)
+
+    # weight so the gesture label can expand into available space
+    main.grid_rowconfigure(0, weight=1)
+    main.grid_rowconfigure(1, weight=0)
+    main.grid_rowconfigure(2, weight=0)
+    main.grid_columnconfigure(0, weight=1)
+
+    # ═════════════════════════════════════════════════════════════════
+    # GESTURE PREDICTION (centred, expands)
+    # ═════════════════════════════════════════════════════════════════
+
+    gesture_label = tk.Label(main, text="—", font=("Helvetica", 80, "bold"),
+                             fg="#ffffff", bg=PALETTE["bg"])
+    gesture_label.grid(row=0, column=0, sticky="nsew")
+
+    # ── movement meter ───────────────────────────────────────────────
+    move_frame = tk.Frame(main, bg=PALETTE["bg"])
+    move_frame.grid(row=1, column=0, pady=(0, 8), padx=60, sticky="ew")
+    move_frame.grid_columnconfigure(0, weight=1)
+
+    move_row = tk.Frame(move_frame, bg=PALETTE["bg"])
+    move_row.grid(row=0, column=0, sticky="ew", pady=(0, 2))
+    move_row.grid_columnconfigure(0, weight=1)
+    move_row.grid_columnconfigure(1, weight=0)
+
+    tk.Label(move_row, text="movement", font=FONTS["mono_small"],
+             fg=PALETTE["fg_muted"], bg=PALETTE["bg"], anchor="w").grid(row=0, column=0, sticky="w")
+    move_val_label = tk.Label(move_row, text="0.0000", font=FONTS["mono"],
+                              fg=PALETTE["fg"], bg=PALETTE["bg"], anchor="e")
+    move_val_label.grid(row=0, column=1, sticky="e")
+
+    move_bar = tk.Canvas(move_frame, height=6, bg=PALETTE["bg"],
+                         highlightthickness=1, highlightbackground=PALETTE["fg_muted"])
+    move_bar.grid(row=1, column=0, sticky="ew")
+
+    # ── status line ──────────────────────────────────────────────────
+    led_frame = tk.Frame(main, bg=PALETTE["bg"])
+    led_frame.grid(row=2, column=0, pady=(4, 6))
+    status_led = tk.Label(led_frame, text="○  idle  ", font=FONTS["mono_small"],
+                          fg=PALETTE["fg_muted"], bg=PALETTE["bg"])
+    status_led.pack(side="left")
+    frame_label = tk.Label(led_frame, text="frame  0", font=FONTS["mono_small"],
+                           fg=PALETTE["fg_muted"], bg=PALETTE["bg"])
+    frame_label.pack(side="left")
+
+    # ═════════════════════════════════════════════════════════════════
+    # BOTTOM BAR — Session Statistics
+    # ═════════════════════════════════════════════════════════════════
+
+    rule2 = tk.Frame(root, height=1, bg=PALETTE["fg_muted"])
+    rule2.pack(fill="x", padx=16, pady=(6, 4))
+
+    stats_bar = tk.Frame(root, bg=PALETTE["bg"])
+    stats_bar.pack(fill="x", padx=16, pady=(0, 8))
+
+    stats_labels = {}
+    for i, (key, text) in enumerate([
+        ("frames", "frames"),
+        ("active", "active"),
+        ("fps", "fps"),
+        ("idle", "idle"),
+        ("sensor", "sensor"),
+        ("mode", "mode"),
+    ]):
+        lbl = tk.Label(stats_bar, text=f"{text}  —", font=FONTS["mono_tiny"],
+                       fg=PALETTE["fg_dim"], bg=PALETTE["bg"])
+        lbl.pack(side="left", padx=(0, 12))
+        stats_labels[key] = lbl
+
+    error_label = tk.Label(root, text="", font=FONTS["mono_tiny"],
+                           fg=PALETTE["warn"], bg=PALETTE["bg"], wraplength=680)
+    error_label.pack(side="bottom", padx=16, pady=(0, 4), anchor="w")
+
+    # ═════════════════════════════════════════════════════════════════
+    # POLLING LOOP
+    # ═════════════════════════════════════════════════════════════════
 
     last_movement = 0.0
+
+    def _draw_bar(canvas: tk.Canvas, fraction: float, color: str) -> None:
+        w = canvas.winfo_width()
+        if w < 2:
+            return
+        canvas.delete("all")
+        bar_w = max(1, int(w * fraction))
+        canvas.create_rectangle(0, 0, bar_w, 8, fill=color, outline="")
+        canvas.create_rectangle(bar_w, 0, w, 8, fill=PALETTE["bg"], outline="")
+
+
 
     def poll():
         nonlocal running, frame_count, displayed, challenge_label, challenge_count
         nonlocal hold_counter, movement_history, display_age, dims_warned, last_movement
         nonlocal observe_until, punch_count, prev_accel, was_in_punch, punch_cooldown
+        nonlocal active_start, total_active_time
+        nonlocal fps_samples, last_fps_time, idle_start
+
         if not running:
             return
+
+        now = time.time()
 
         try:
             frame_data = {name: reader.read() for name, reader in reader_map.items()}
@@ -419,7 +541,22 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
             frame_buffer.append(frame_data)
             window = list(frame_buffer)
 
+            # ── FPS tracking ────────────────────────────────────────
+            if last_fps_time is not None:
+                dt = now - last_fps_time
+                if dt > 0:
+                    fps_samples.append(1.0 / dt)
+            last_fps_time = now
+
+            fps = np.mean(fps_samples) if fps_samples else 0.0
+
+            # ── update frame counter ────────────────────────────────
+            frame_label.config(text=f"frame  {frame_count}")
+            stats_labels["frames"].config(text=f"frames  {frame_count}")
+            stats_labels["fps"].config(text=f"fps  {fps:.1f}")
+
             if len(window) >= args.window:
+                # ── gather IMU data for boxing detection ─────────
                 current_accel: list[float] | None = None
                 for name, stype in sensor_types.items():
                     if stype == "imu" and name in frame_data:
@@ -430,6 +567,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                                 current_accel = list(map(float, accel))
                                 break
 
+                # ── compute features ────────────────────────────────
                 raw_movement = 0.0
                 features = []
                 for name in args.sensors:
@@ -440,18 +578,44 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                 if not dims_warned:
                     err = _check_feature_dims(len(features), expected_n_features, args.sensors)
                     if err:
-                        error_label.config(text=f"⚠ {err}", fg=colors["warn"])
+                        error_label.config(text=f"⚠ {err}", fg=PALETTE["warn"])
                     dims_warned = True
 
                 movement_history.append(raw_movement)
                 movement = np.mean(movement_history)
                 last_movement = movement
 
-                movement_bar["value"] = min(movement, 300)
-                movement_text.config(text=f"{movement:.2f}  (th={args.idle_threshold})")
-
                 is_idle = movement < args.idle_threshold
 
+                # ── idle / active tracking ───────────────────────────
+                if is_idle:
+                    if active_start is not None:
+                        total_active_time += now - active_start
+                        active_start = None
+                    if idle_start is None:
+                        idle_start = now
+                    idle_duration = now - idle_start
+                    status_led.config(text="○  idle", fg=PALETTE["fg_muted"])
+                    stats_labels["active"].config(
+                        text=f"active  {total_active_time:.1f}s")
+                    stats_labels["idle"].config(
+                        text=f"idle  {idle_duration:.1f}s")
+                else:
+                    if active_start is None:
+                        active_start = now
+                    active_duration = total_active_time + (now - active_start)
+                    idle_start = None
+                    status_led.config(text="●  active", fg=PALETTE["success"])
+                    stats_labels["active"].config(
+                        text=f"active  {active_duration:.1f}s")
+                    stats_labels["idle"].config(text="idle  0.0s")
+
+                # ── update movement / conf bars ──────────────────────
+                move_val_label.config(text=f"{movement:.4f}  (τ={args.idle_threshold:.2f})")
+                _draw_bar(move_bar, min(movement / max(args.idle_threshold * 3, 0.01), 1.0),
+                               PALETTE["fg_dim"])
+
+                # ── boxing observation: count punches, determine type ──
                 if observe_until is not None and current_accel is not None and prev_accel is not None:
                     delta = sum(abs(current_accel[i] - prev_accel[i]) for i in range(3))
                     in_punch = delta > args.punch_threshold
@@ -468,36 +632,43 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                 if observe_until is not None:
                     if frame_count >= observe_until:
                         if punch_count >= 2:
-                            gesture_label.config(text="ONE-ARM-BOXING", fg=colors["success"])
-                            conf_label.config(text="", fg=colors["fg"])
+                            display_text = "ONE-ARM-BOXING"
                             displayed = "one-arm-boxing"
                         else:
-                            gesture_label.config(text="TWO-ARM-BOXING", fg=colors["success"])
-                            conf_label.config(text="", fg=colors["fg"])
+                            display_text = "TWO-ARM-BOXING"
                             displayed = "two-arm-boxing"
-                        info.config(text="")
-                        observe_until = None
-                        punch_count = 0
-                        was_in_punch = False
-                        punch_cooldown = 0
+                        gesture_label.config(text=display_text, fg=PALETTE["success"])
                         display_age = 0
                         challenge_count = 0
                         challenge_label = None
                         hold_counter = max_hold_frames
+                        error_label.config(text="")
+                        # reset observation state
+                        observe_until = None
+                        punch_count = 0
+                        was_in_punch = False
+                        punch_cooldown = 0
+                        root.after(25, poll)
+                        return
+                    else:
+                        gesture_label.config(text="OBSERVING...", fg=PALETTE["warn"])
+                        error_label.config(text=f"observing... {punch_count} punches", fg=PALETTE["fg_dim"])
+                        root.after(25, poll)
+                        return
 
+                # ── idle ──
                 if is_idle:
                     if displayed is not None:
                         if hold_counter > 0:
                             hold_counter -= 1
                             display_age += 1
                         else:
-                            gesture_label.config(text="—", fg=colors["accent"])
-                            conf_label.config(text="")
+                            gesture_label.config(text="—", fg="#ffffff")
                             displayed = None
                             smooth_buffer.clear()
                             challenge_count = 0
                             challenge_label = None
-                            info.config(text="Make a gesture")
+                            error_label.config(text="")
                     else:
                         smooth_buffer.clear()
                         challenge_count = 0
@@ -507,14 +678,11 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
 
                 hold_counter = max_hold_frames
 
-                if observe_until is not None:
-                    root.after(25, poll)
-                    return
-
+                # ── predict ──────────────────────────────────────────
                 try:
                     label, conf = _predict(pipeline, gestures, features)
                 except Exception as e:
-                    error_label.config(text=f"⚠ Prediction error: {e}", fg=colors["warn"])
+                    error_label.config(text=f"⚠ prediction error: {e}", fg=PALETTE["warn"])
                     root.after(30, poll)
                     return
 
@@ -531,8 +699,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         challenge_count = 0
                         challenge_label = None
                         display_age += 1
-                        gesture_label.config(fg=colors["success"])
-                        conf_label.config(fg=colors["fg"])
+                        gesture_label.config(fg="#ffffff")
                     elif display_age < min_display_frames:
                         display_age += 1
                     elif smoothed == challenge_label:
@@ -547,45 +714,28 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             punch_count = 0
                             was_in_punch = False
                             punch_cooldown = 0
-                            gesture_label.config(text="OBSERVING...", fg=colors["warn"])
-                            conf_label.config(text="", fg=colors["fg"])
+                            gesture_label.config(text="OBSERVING...", fg=PALETTE["warn"])
+                            error_label.config(text=f"observing for punches ({args.boxing_delay_frames} frames)...", fg=PALETTE["fg_dim"])
                         else:
-                            gesture_label.config(text=smoothed.upper(), fg=colors["success"])
-                            conf_label.config(text=f"conf={conf:.2f}", fg=colors["fg"])
+                            display_upper = smoothed.upper()
+                            gesture_label.config(text=display_upper, fg="#ffffff")
                             displayed = smoothed
                             display_age = 0
                             challenge_count = 0
                             challenge_label = None
                             hold_counter = max_hold_frames
-                            info.config(text="")
+                            error_label.config(text="")
 
-            if reader_map:
-                key = next(iter(reader_map))
-                latest = frame_data.get(key)
-                if latest and latest.data:
-                    accel = latest.data.get("accel", [])
-                    gyro = latest.data.get("gyro", [])
-                    if accel and gyro:
-                        a_str = f"a=({accel[0]:+.2f},{accel[1]:+.2f},{accel[2]:+.2f})"
-                        g_str = f"g=({gyro[0]:+.2f},{gyro[1]:+.2f},{gyro[2]:+.2f})"
-                        sensor_data_label.config(text=f"{a_str}  {g_str}")
-                        if latest.confidence > 0:
-                            status_led.config(text="●", fg=colors["success"])
-                        else:
-                            status_led.config(text="●", fg=colors["warn"])
-                    else:
-                        sensor_data_label.config(text="sensor: no data")
-                        status_led.config(text="●", fg=colors["warn"])
+            # ── update stats bar sensor info ─────────────────────────
+            stats_labels["sensor"].config(text=f"sensor  {', '.join(args.sensors)}")
+            stats_labels["mode"].config(text=f"mode  {args.mode}")
 
-            if last_movement > args.idle_threshold:
-                status_led.config(text="●", fg=colors["success"])
-
-            last_frame.config(text=f"Frame: {frame_count}")
         except Exception as e:
-            error_label.config(text=f"⚠ {e}", fg=colors["warn"])
+            error_label.config(text=f"⚠ {e}", fg=PALETTE["warn"])
 
         root.after(25, poll)
 
+    # ── start ───────────────────────────────────────────────────────
     def on_close():
         nonlocal running
         running = False
@@ -628,10 +778,16 @@ def main() -> None:
                         help="Require new label to dominate this many consecutive frames before switching")
     parser.add_argument("--gui", action="store_true",
                         help="Show prediction GUI window")
-    parser.add_argument("--boxing-delay-frames", type=int, default=40,
-                        help="Frames to observe movement and count punches to decide boxing type")
     parser.add_argument("--punch-threshold", type=float, default=1.0,
                         help="Per-frame accel delta threshold for detecting a punch (default: 1.0)")
+    parser.add_argument("--boxing-delay-frames", type=int, default=40,
+                        help="Frames to observe after boxing is detected before classifying one-arm vs two-arm (default: 40)")
+    parser.add_argument("--accel-gain", type=float, default=1.15,
+                        help="Scale factor for accelerometer values (default: 1.15 — tiny emphasis on linear movement)")
+    parser.add_argument("--gyro-gain", type=float, default=0.6,
+                        help="Scale factor for gyro values before model (default: 0.6)")
+    parser.add_argument("--gyro-deadband", type=float, default=2.0,
+                        help="Gyro deadband in dps — values below this are zeroed out (default: 2.0)")
     parser.add_argument("--debug", action="store_true",
                         help="Print per-frame predictions")
     parser.add_argument("--imu-port", default=None,
@@ -698,6 +854,12 @@ def main() -> None:
             reader_map[name] = reader
             sensor_types[name] = reader.sensor_type
             print(f"  Started {name} reader ({args.mode} mode)")
+
+    # Apply IMU processing params
+    global _accel_gain, _gyro_gain, _gyro_deadband
+    _accel_gain = args.accel_gain
+    _gyro_gain = args.gyro_gain
+    _gyro_deadband = args.gyro_deadband
 
     if args.gui:
         run_gui(args, pipeline, expected_n_features, gestures_list, reader_map, sensor_types)
