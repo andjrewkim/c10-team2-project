@@ -791,7 +791,7 @@ def main() -> None:
                         help="Show prediction GUI window")
     parser.add_argument("--punch-threshold", type=float, default=1.0,
                         help="Per-frame accel delta threshold for detecting a punch (default: 1.0)")
-    parser.add_argument("--boxing-delay-frames", type=int, default=40,
+    parser.add_argument("--boxing-delay-frames", type=int, default=60,
                         help="Frames to observe after boxing is detected before classifying one-arm vs two-arm (default: 40)")
     parser.add_argument("--min-boxing-movement", type=float, default=1.0,
                         help="Minimum movement score to trigger boxing observation (default: 1.0)")
