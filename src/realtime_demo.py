@@ -761,10 +761,15 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
             reader.stop()
 
 
+def _find_latest_model(models_dir: str = "models", pattern: str = "best_model.pkl") -> str:
+    candidates = sorted(Path(models_dir).glob(f"train_*/{pattern}"))
+    return str(candidates[-1]) if candidates else f"models/{pattern}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Real-time gesture classification demo")
-    parser.add_argument("--model", default="models/v2/imu_v2_best_model.pkl",
-                        help="Path to trained model pickle")
+    parser.add_argument("--model", default=_find_latest_model(),
+                        help="Path to trained model pickle (default: latest train_*/best_model.pkl)")
     parser.add_argument("--features", default=None,
                         help="Path to features NPZ (for metadata)")
     parser.add_argument("--sensors", nargs="+", default=["imu"],

@@ -75,11 +75,18 @@ def imu_window_features(window_readings):
     return result
 
 
+def _find_latest_model(models_dir: str = "models", pattern: str = "best_model.pkl") -> str:
+    candidates = sorted(Path(models_dir).glob(f"train_*/{pattern}"))
+    return str(candidates[-1]) if candidates else f"models/{pattern}"
+
+
 def main() -> None:
+    default_mm = _find_latest_model(pattern="mmwave_best_model.pkl")
+    default_imu = _find_latest_model(pattern="imu_best_model.pkl")
     parser = argparse.ArgumentParser(description="Fused mmWave + IMU real-time demo")
-    parser.add_argument("--mmwave-model", default="models/mmwave_best_model.pkl",
+    parser.add_argument("--mmwave-model", default=default_mm,
                         help="mmWave trained model")
-    parser.add_argument("--imu-model", default="models/imu_best_model.pkl",
+    parser.add_argument("--imu-model", default=default_imu,
                         help="IMU trained model")
     parser.add_argument("--mode", default="mock", choices=["mock", "serial"])
     parser.add_argument("--window", type=int, default=10)

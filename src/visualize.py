@@ -448,11 +448,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Visualize recorded gesture data")
     parser.add_argument("--input", default="data/raw",
                         help="Session folder (with events.csv) or JSONL file/directory")
-    parser.add_argument("--mode", choices=["stats", "mmwave", "imu", "overlay", "compare", "consistency"],
+    parser.add_argument("--mode", choices=["stats", "sensor", "mmwave", "imu", "overlay", "compare", "consistency"],
                         default="stats",
                         help="What to show")
     """mode argument options"""
         # stats: prints frame count per gesture and which sensors were used
+        # sensor: per gesture, prints how many trials have data for each sensor
         # mmwave: 
             # centroid x/y over time
             # body width (x span) and body depth (y span)
@@ -588,6 +589,32 @@ def main() -> None:
             consistency_gesture(filtered_frames, args.gesture, args.field, session_ts=session_ts)
         else:
             consistency_multi_gestures(filtered_frames, args.field, session_ts=session_ts)
+        return
+
+    if args.mode == "sensor":
+        meta_keys = {"timestamp", "gesture", "trial", "elapsed"}
+        by_gesture: dict[str, dict[str, int]] = {}
+        for name, frames in filtered_frames.items():
+            g = frames[0].get("gesture", "?")
+            trial_sensors = set(k for k in frames[0] if k not in meta_keys)
+            for f in frames[1:]:
+                trial_sensors |= set(k for k in f if k not in meta_keys)
+            d = by_gesture.setdefault(g, {"trial_count": 0})
+            d["trial_count"] += 1
+            for s in trial_sensors:
+                d[s] = d.get(s, 0) + 1
+        all_sensors = sorted({s for v in by_gesture.values() for s in v if s != "trial_count"})
+        header = f"{'Gesture':<25} {'Trials':>6}"
+        for s in all_sensors:
+            header += f"  {s:>8}"
+        print(header)
+        print("-" * len(header))
+        for g in sorted(by_gesture):
+            info = by_gesture[g]
+            line = f"{g:<25} {info['trial_count']:>6}"
+            for s in all_sensors:
+                line += f"  {info.get(s, 0):>8}"
+            print(line)
         return
 
     if args.mode == "stats":
