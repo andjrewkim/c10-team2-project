@@ -110,20 +110,16 @@ def _compute_features(readings: list, sensor_type: str) -> list[float]:
         return [0.0] * n
 
     if sensor_type == "imu":
-        # Augment base 6-channel vector with gyro_mag and accel_mag
         accel = sensor_feats[:, 0:3]
         gyro = sensor_feats[:, 3:6]
         gyro_mag = np.sqrt(np.sum(gyro**2, axis=1, keepdims=True))
         accel_mag = np.sqrt(np.sum(accel**2, axis=1, keepdims=True))
-        feats = np.concatenate([sensor_feats, gyro_mag, accel_mag], axis=1)  # (N, 8)
+        feats = np.concatenate([sensor_feats, gyro_mag, accel_mag], axis=1)
 
         out = list(np.mean(feats, axis=0))
         out.extend(np.std(feats, axis=0).tolist())
-        # Accel deltas (3 channels, window-1 time steps)
         out.extend((feats[1:, 0:3] - feats[:-1, 0:3]).flatten().tolist())
-        # Gyro deltas (3 channels, window-1 time steps)
         out.extend((feats[1:, 3:6] - feats[:-1, 3:6]).flatten().tolist())
-        # Magnitude deltas (2 channels, window-1 time steps)
         out.extend((feats[1:, 6:8] - feats[:-1, 6:8]).flatten().tolist())
         return out
     else:
@@ -157,7 +153,6 @@ def _predict(pipeline, gestures, features):
 
 
 def _check_feature_dims(n_computed: int, n_expected: int, sensor_names: list[str]) -> str | None:
-    """Return an error message if feature dimensions mismatch, else None."""
     if n_computed == n_expected:
         return None
     return (
@@ -178,6 +173,11 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     movement_history: deque[float] = deque(maxlen=5)
     min_display_frames = 5
     display_age = 0
+    observe_until: int | None = None
+    punch_count = 0
+    prev_accel: list[float] | None = None
+    was_in_punch = False
+    punch_cooldown = 0
 
     print("\n=== Real-time Demo Started ===")
     print("Waiting for gestures...\n")
@@ -191,6 +191,16 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
 
             if len(window) < args.window:
                 continue
+
+            current_accel: list[float] | None = None
+            for name, stype in sensor_types.items():
+                if stype == "imu" and name in frame_data:
+                    reading = frame_data[name]
+                    if reading and reading.data:
+                        accel = reading.data.get("accel", None)
+                        if accel is not None:
+                            current_accel = list(map(float, accel))
+                            break
 
             raw_movement = 0.0
             features = []
@@ -209,6 +219,36 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
 
             is_idle = movement < args.idle_threshold
 
+            if observe_until is not None and current_accel is not None and prev_accel is not None:
+                delta = sum(abs(current_accel[i] - prev_accel[i]) for i in range(3))
+                in_punch = delta > args.punch_threshold
+                if punch_cooldown > 0:
+                    punch_cooldown -= 1
+                elif in_punch and not was_in_punch:
+                    punch_count += 1
+                    punch_cooldown = 10
+                was_in_punch = in_punch
+
+            if current_accel is not None:
+                prev_accel = current_accel[:]
+
+            if observe_until is not None:
+                if frame_count >= observe_until:
+                    if punch_count >= 2:
+                        print(f"> one-arm-boxing  ({punch_count} punches)")
+                        displayed = "one-arm-boxing"
+                    else:
+                        print(f"> two-arm-boxing  ({punch_count} punch)")
+                        displayed = "two-arm-boxing"
+                    display_age = 0
+                    challenge_count = 0
+                    challenge_label = None
+                    hold_counter = max_hold_frames
+                    observe_until = None
+                    punch_count = 0
+                    was_in_punch = False
+                    punch_cooldown = 0
+
             if is_idle:
                 if displayed is not None:
                     if hold_counter > 0:
@@ -224,38 +264,49 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                     smooth_buffer.clear()
                     challenge_count = 0
                     challenge_label = None
-            else:
-                hold_counter = max_hold_frames
+                continue
 
-                try:
-                    label, conf = _predict(pipeline, gestures, features)
-                except Exception as e:
-                    print(f"  ⚠ Prediction error: {e}")
-                    time.sleep(0.02)
-                    continue
-                if conf < args.min_conf:
-                    continue
-                smooth_buffer.append(label)
+            hold_counter = max_hold_frames
 
-                if len(smooth_buffer) >= args.min_vote:
-                    counts = {}
-                    for lbl in smooth_buffer:
-                        counts[lbl] = counts.get(lbl, 0) + 1
-                    smoothed = max(counts, key=counts.get)
+            if observe_until is not None:
+                continue
 
-                    if smoothed == displayed:
-                        challenge_count = 0
-                        challenge_label = None
-                        display_age += 1
-                    elif display_age < min_display_frames:
-                        display_age += 1
-                    elif smoothed == challenge_label:
-                        challenge_count += 1
+            try:
+                label, conf = _predict(pipeline, gestures, features)
+            except Exception as e:
+                print(f"  ⚠ Prediction error: {e}")
+                time.sleep(0.02)
+                continue
+            if conf < args.min_conf:
+                continue
+            smooth_buffer.append(label)
+
+            if len(smooth_buffer) >= args.min_vote:
+                counts = {}
+                for lbl in smooth_buffer:
+                    counts[lbl] = counts.get(lbl, 0) + 1
+                smoothed = max(counts, key=counts.get)
+
+                if smoothed == displayed:
+                    challenge_count = 0
+                    challenge_label = None
+                    display_age += 1
+                elif display_age < min_display_frames:
+                    display_age += 1
+                elif smoothed == challenge_label:
+                    challenge_count += 1
+                else:
+                    challenge_label = smoothed
+                    challenge_count = 1
+
+                if challenge_count >= args.change_frames:
+                    if smoothed in ("one-arm-boxing", "two-arm-boxing"):
+                        observe_until = frame_count + args.boxing_delay_frames
+                        punch_count = 0
+                        was_in_punch = False
+                        punch_cooldown = 0
+                        print(f"  observing for punches ({args.boxing_delay_frames} frames)...")
                     else:
-                        challenge_label = smoothed
-                        challenge_count = 1
-
-                    if challenge_count >= args.change_frames:
                         print(f"> {smoothed}  (conf={conf:.2f})")
                         displayed = smoothed
                         display_age = 0
@@ -293,6 +344,11 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     min_display_frames = 5
     display_age = 0
     dims_warned = False
+    observe_until: int | None = None
+    punch_count = 0
+    prev_accel: list[float] | None = None
+    was_in_punch = False
+    punch_cooldown = 0
 
     root = tk.Tk()
     root.title("Gesture Demo")
@@ -332,7 +388,6 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                           fg=colors["fg"], bg=colors["bg"])
     last_frame.pack(pady=(8, 0))
 
-    # Live sensor reading display
     sensor_data_label = tk.Label(root, text="sensor: —", font=tiny_font,
                                  fg="#6c7086", bg=colors["bg"])
     sensor_data_label.pack(pady=(0, 2))
@@ -354,6 +409,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     def poll():
         nonlocal running, frame_count, displayed, challenge_label, challenge_count
         nonlocal hold_counter, movement_history, display_age, dims_warned, last_movement
+        nonlocal observe_until, punch_count, prev_accel, was_in_punch, punch_cooldown
         if not running:
             return
 
@@ -364,6 +420,16 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
             window = list(frame_buffer)
 
             if len(window) >= args.window:
+                current_accel: list[float] | None = None
+                for name, stype in sensor_types.items():
+                    if stype == "imu" and name in frame_data:
+                        reading = frame_data[name]
+                        if reading and reading.data:
+                            accel = reading.data.get("accel", None)
+                            if accel is not None:
+                                current_accel = list(map(float, accel))
+                                break
+
                 raw_movement = 0.0
                 features = []
                 for name in args.sensors:
@@ -371,7 +437,6 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     raw_movement += _movement_score(readings, sensor_types[name])
                     features.extend(_compute_features(readings, sensor_types[name]))
 
-                # Check feature dimensions once
                 if not dims_warned:
                     err = _check_feature_dims(len(features), expected_n_features, args.sensors)
                     if err:
@@ -386,6 +451,39 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                 movement_text.config(text=f"{movement:.2f}  (th={args.idle_threshold})")
 
                 is_idle = movement < args.idle_threshold
+
+                if observe_until is not None and current_accel is not None and prev_accel is not None:
+                    delta = sum(abs(current_accel[i] - prev_accel[i]) for i in range(3))
+                    in_punch = delta > args.punch_threshold
+                    if punch_cooldown > 0:
+                        punch_cooldown -= 1
+                    elif in_punch and not was_in_punch:
+                        punch_count += 1
+                        punch_cooldown = 10
+                    was_in_punch = in_punch
+
+                if current_accel is not None:
+                    prev_accel = current_accel[:]
+
+                if observe_until is not None:
+                    if frame_count >= observe_until:
+                        if punch_count >= 2:
+                            gesture_label.config(text="ONE-ARM-BOXING", fg=colors["success"])
+                            conf_label.config(text=f"{punch_count} punches", fg=colors["fg"])
+                            displayed = "one-arm-boxing"
+                        else:
+                            gesture_label.config(text="TWO-ARM-BOXING", fg=colors["success"])
+                            conf_label.config(text=f"{punch_count} punch", fg=colors["fg"])
+                            displayed = "two-arm-boxing"
+                        info.config(text="")
+                        observe_until = None
+                        punch_count = 0
+                        was_in_punch = False
+                        punch_cooldown = 0
+                        display_age = 0
+                        challenge_count = 0
+                        challenge_label = None
+                        hold_counter = max_hold_frames
 
                 if is_idle:
                     if displayed is not None:
@@ -404,40 +502,54 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         smooth_buffer.clear()
                         challenge_count = 0
                         challenge_label = None
-                else:
-                    hold_counter = max_hold_frames
+                    root.after(25, poll)
+                    return
 
-                    try:
-                        label, conf = _predict(pipeline, gestures, features)
-                    except Exception as e:
-                        error_label.config(text=f"⚠ Prediction error: {e}", fg=colors["warn"])
-                        root.after(30, poll)
-                        return
+                hold_counter = max_hold_frames
 
-                    if conf >= args.min_conf:
-                        smooth_buffer.append(label)
+                if observe_until is not None:
+                    root.after(25, poll)
+                    return
 
-                    if len(smooth_buffer) >= args.min_vote:
-                        counts = {}
-                        for lbl in smooth_buffer:
-                            counts[lbl] = counts.get(lbl, 0) + 1
-                        smoothed = max(counts, key=counts.get)
+                try:
+                    label, conf = _predict(pipeline, gestures, features)
+                except Exception as e:
+                    error_label.config(text=f"⚠ Prediction error: {e}", fg=colors["warn"])
+                    root.after(30, poll)
+                    return
 
-                        if smoothed == displayed:
-                            challenge_count = 0
-                            challenge_label = None
-                            display_age += 1
-                            gesture_label.config(fg=colors["success"])
-                            conf_label.config(fg=colors["fg"])
-                        elif display_age < min_display_frames:
-                            display_age += 1
-                        elif smoothed == challenge_label:
-                            challenge_count += 1
+                if conf >= args.min_conf:
+                    smooth_buffer.append(label)
+
+                if len(smooth_buffer) >= args.min_vote:
+                    counts = {}
+                    for lbl in smooth_buffer:
+                        counts[lbl] = counts.get(lbl, 0) + 1
+                    smoothed = max(counts, key=counts.get)
+
+                    if smoothed == displayed:
+                        challenge_count = 0
+                        challenge_label = None
+                        display_age += 1
+                        gesture_label.config(fg=colors["success"])
+                        conf_label.config(fg=colors["fg"])
+                    elif display_age < min_display_frames:
+                        display_age += 1
+                    elif smoothed == challenge_label:
+                        challenge_count += 1
+                    else:
+                        challenge_label = smoothed
+                        challenge_count = 1
+
+                    if challenge_count >= args.change_frames:
+                        if smoothed in ("one-arm-boxing", "two-arm-boxing"):
+                            observe_until = frame_count + args.boxing_delay_frames
+                            punch_count = 0
+                            was_in_punch = False
+                            punch_cooldown = 0
+                            gesture_label.config(text="OBSERVING...", fg=colors["warn"])
+                            conf_label.config(text="counting punches", fg=colors["fg"])
                         else:
-                            challenge_label = smoothed
-                            challenge_count = 1
-
-                        if challenge_count >= args.change_frames:
                             gesture_label.config(text=smoothed.upper(), fg=colors["success"])
                             conf_label.config(text=f"conf={conf:.2f}", fg=colors["fg"])
                             displayed = smoothed
@@ -447,7 +559,6 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             hold_counter = max_hold_frames
                             info.config(text="")
 
-            # Show latest sensor reading
             if reader_map:
                 key = next(iter(reader_map))
                 latest = frame_data.get(key)
@@ -458,7 +569,6 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         a_str = f"a=({accel[0]:+.2f},{accel[1]:+.2f},{accel[2]:+.2f})"
                         g_str = f"g=({gyro[0]:+.2f},{gyro[1]:+.2f},{gyro[2]:+.2f})"
                         sensor_data_label.config(text=f"{a_str}  {g_str}")
-                        # Green LED when we get real data with confidence
                         if latest.confidence > 0:
                             status_led.config(text="●", fg=colors["success"])
                         else:
@@ -467,7 +577,6 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         sensor_data_label.config(text="sensor: no data")
                         status_led.config(text="●", fg=colors["warn"])
 
-            # Update status LED for movement / activity
             if last_movement > args.idle_threshold:
                 status_led.config(text="●", fg=colors["success"])
 
@@ -519,6 +628,10 @@ def main() -> None:
                         help="Require new label to dominate this many consecutive frames before switching")
     parser.add_argument("--gui", action="store_true",
                         help="Show prediction GUI window")
+    parser.add_argument("--boxing-delay-frames", type=int, default=40,
+                        help="Frames to observe movement and count punches to decide boxing type")
+    parser.add_argument("--punch-threshold", type=float, default=1.0,
+                        help="Per-frame accel delta threshold for detecting a punch (default: 1.0)")
     parser.add_argument("--debug", action="store_true",
                         help="Print per-frame predictions")
     parser.add_argument("--imu-port", default=None,
