@@ -89,7 +89,7 @@ the fused model.
 
 `pull`, `push`, `clockwise`, `anticlockwise`, `right`, `left`, `bye-bye`,
 `one-arm-boxing`, `clapping`, `two-arm-boxing`, `t-arm`, `raise-arms`,
-`soli`, `making-fist-and-open`, `palm-up-down`
+`soli`, `making-fist-open`, `palm-up-down`
 
 ## Structure
 
