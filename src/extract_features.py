@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split
 
 
 MM_FEATURE_NAMES = [
-    "num_points", "mean_x", "std_x", "mean_y", "std_y", "raw_range_profile", "mean_range"
+    "num_points", "mean_x", "std_x", "min_x", "mean_y", "std_y", "range_profile"
 ]
 
 
@@ -24,7 +24,7 @@ def extract_mmwave_features(frame: dict) -> list[float]:
     range_profile = data.get("range_profile", [])
 
     if not points:
-        return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0]
+        return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     xs = np.array([p.get("x", 0) for p in points])
     ys = np.array([p.get("y", 0) for p in points])
@@ -33,9 +33,11 @@ def extract_mmwave_features(frame: dict) -> list[float]:
         float(num_points),
         float(np.mean(xs)),
         float(np.std(xs)),
+        float(np.min(xs)), # closest distance
         float(np.mean(ys)),
         float(np.std(ys)),
-        float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)),
+        range_profile[0] if range_profile else 0.0, # range profile
+        float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)), # distance from origin
     ]
 
 
