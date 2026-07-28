@@ -90,6 +90,14 @@ def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]
 
 
 def _movement_score(readings: list, sensor_type: str) -> float:
+    """Movement score based on accel frame-to-frame deltas (accel-only).
+
+    Gyro is intentionally excluded — even holding still, the wrist IMU
+    picks up tiny rotational jitter (tremor, sensor noise) that would make
+    the system never reach idle.  Subtle rotational gestures like soli are
+    instead caught by _check_gyro_oscillation() which checks for the
+    specific oscillatory pattern of finger rub.
+    """
     if sensor_type == "imu":
         if len(readings) < 2:
             return 0.0
@@ -116,6 +124,43 @@ def _movement_score(readings: list, sensor_type: str) -> float:
     return 0.0
 
 
+def _check_gyro_oscillation(readings: list) -> bool:
+    """Detect subtle oscillatory gestures (soli finger rub) that accel-only
+    idle detection would miss.
+
+    Applies the same gyro gain + deadband as the feature pipeline so that
+    the override is consistent with what the model actually sees.
+
+    Uses deliberately high thresholds so that only deliberate finger-rub
+    oscillation triggers the override — tiny wrist jitter at rest stays idle.
+
+    Returns True if at least 2 of 3 gyro channels show both:
+      - Strong amplitude (RMS > 1.5 dps after deadband)
+      - Fast oscillation (zero-crossing rate > 0.30)
+    """
+    if len(readings) < 4:
+        return False
+    gyros = []
+    for r in readings:
+        g = r.data.get("gyro", [0, 0, 0])
+        gx = g[0] * _gyro_gain if abs(g[0] * _gyro_gain) >= _gyro_deadband else 0.0
+        gy = g[1] * _gyro_gain if abs(g[1] * _gyro_gain) >= _gyro_deadband else 0.0
+        gz = g[2] * _gyro_gain if abs(g[2] * _gyro_gain) >= _gyro_deadband else 0.0
+        gyros.append([gx, gy, gz])
+    gyro_data = np.array(gyros)
+    oscillating = 0
+    for c in range(3):
+        col = gyro_data[:, c]
+        rms = float(np.sqrt(np.mean(col ** 2)))
+        if rms < 1.5:
+            continue
+        centered = col - np.mean(col)
+        crossings = int(np.sum((centered[:-1] * centered[1:]) < 0))
+        zcr = crossings / len(col) if len(col) > 0 else 0.0
+        if zcr > 0.30:
+            oscillating += 1
+    return oscillating >= 2
+
 def _gather_readings(window: list[dict], name: str) -> list:
     return [f[name] for f in window if name in f]
 
@@ -135,6 +180,20 @@ def _compute_features(readings: list, sensor_type: str) -> list[float]:
 
         out = list(np.mean(feats, axis=0))
         out.extend(np.std(feats, axis=0).tolist())
+
+        # RMS — signal energy independent of direction
+        out.extend(np.sqrt(np.mean(feats ** 2, axis=0)).tolist())
+
+        # Zero-crossing rate — oscillation frequency (soli oscillates fast, t-arm doesn't)
+        for c in range(8):
+            col = feats[:, c]
+            centered = col - np.mean(col)
+            if len(centered) < 2:
+                out.append(0.0)
+            else:
+                crossings = np.sum((centered[:-1] * centered[1:]) < 0)
+                out.append(float(crossings) / len(col))
+
         out.extend((feats[1:, 0:3] - feats[:-1, 0:3]).flatten().tolist())
         out.extend((feats[1:, 3:6] - feats[:-1, 3:6]).flatten().tolist())
         out.extend((feats[1:, 6:8] - feats[:-1, 6:8]).flatten().tolist())
@@ -172,9 +231,11 @@ def _predict(pipeline, gestures, features):
 def _check_feature_dims(n_computed: int, n_expected: int, sensor_names: list[str]) -> str | None:
     if n_computed == n_expected:
         return None
+    # IMU: 8 means + 8 stds + 8 RMS + 8 ZCR + 8×(W-1) deltas = 32 + 8×(W-1)
+    approx_w = (n_computed - 32) // 8 + 1 if n_computed >= 32 else 0
     return (
         f"Feature mismatch: computed {n_computed} features, but model expects {n_expected}. "
-        f"Check --window ({n_computed // 8 - 1} for IMU, or use different sensor)"
+        f"Check --window (~{approx_w} for IMU, or use different sensor)"
     )
 
 
@@ -236,6 +297,14 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
             movement = np.mean(movement_history)
 
             is_idle = movement < args.idle_threshold
+
+            # ── gyro oscillation override ──────────────────────────────
+            # Soli (finger rub) produces minimal wrist accel but distinctive
+            # oscillatory gyro.  Override idle so the model gets to classify it.
+            if is_idle:
+                imu_readings = _gather_readings(window, "imu")
+                if imu_readings and _check_gyro_oscillation(imu_readings):
+                    is_idle = False
 
             # ── boxing observation: count punches, determine type ──
             if observe_until is not None and current_accel is not None and prev_accel is not None:
@@ -595,6 +664,15 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
 
                 is_idle = movement < args.idle_threshold
 
+                # ── gyro oscillation override ────────────────────────
+                # Soli (finger rub) produces minimal wrist accel but
+                # distinctive oscillatory gyro. Override idle so the model
+                # gets to classify it.
+                if is_idle:
+                    imu_readings = _gather_readings(window, "imu")
+                    if imu_readings and _check_gyro_oscillation(imu_readings):
+                        is_idle = False
+
                 # ── idle / active tracking ───────────────────────────
                 if is_idle:
                     if active_start is not None:
@@ -782,7 +860,7 @@ def main() -> None:
                         help="Serial ports for UWB devices")
     parser.add_argument("--window", type=int, default=5,
                         help="Window size (matches training)")
-    parser.add_argument("--idle-threshold", type=float, default=0.2,
+    parser.add_argument("--idle-threshold", type=float, default=0.4,
                         help="Movement score below this = idle")
     parser.add_argument("--min-conf", type=float, default=0.65,
                         help="Minimum prediction confidence to accept")
