@@ -1,0 +1,18 @@
+{
+  "session": "20260728_174941",
+  "gestures": [
+    "bye-bye",
+    "clapping",
+    "one-arm-boxing",
+    "two-arm-boxing"
+  ],
+  "trials_per_gesture": 3,
+  "duration_s": 3.0,
+  "fps": 10,
+  "sensors": [
+    "mmwave"
+  ],
+  "mode": "serial",
+  "total_frames": 300,
+  "num_trials": 10
+}

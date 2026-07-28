@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split
 
 
 MM_FEATURE_NAMES = [
-    "num_points", "mean_x", "std_x", "mean_y", "std_y", "mean_range",
+    "num_points", "mean_x", "std_x", "mean_y", "std_y", "raw_range_profile", "mean_range"
 ]
 
 
@@ -21,6 +21,7 @@ def extract_mmwave_features(frame: dict) -> list[float]:
     data = mm.get("data", {})
     points = data.get("points", [])
     num_points = data.get("num_points", len(points))
+    range_profile = data.get("range_profile", [])
 
     if not points:
         return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0]
