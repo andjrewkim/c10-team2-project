@@ -1,0 +1,28 @@
+{
+  "label_to_int": {
+    "anticlockwise": 0,
+    "clockwise": 1,
+    "left": 2,
+    "making-fist-open": 3,
+    "palm-up-down": 4,
+    "pull": 5,
+    "push": 6,
+    "raise-arms": 7,
+    "right": 8,
+    "soli": 9,
+    "t-arm": 10
+  },
+  "int_to_label": {
+    "0": "anticlockwise",
+    "1": "clockwise",
+    "2": "left",
+    "3": "making-fist-open",
+    "4": "palm-up-down",
+    "5": "pull",
+    "6": "push",
+    "7": "raise-arms",
+    "8": "right",
+    "9": "soli",
+    "10": "t-arm"
+  }
+}

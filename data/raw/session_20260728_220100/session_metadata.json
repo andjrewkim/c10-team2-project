@@ -1,0 +1,19 @@
+{
+  "session": "20260728_220100",
+  "gestures": [
+    "t-arm",
+    "soli",
+    "making-fist-open",
+    "palm-up-down"
+  ],
+  "trials_per_gesture": 5,
+  "duration_s": 1.5,
+  "fps": 10,
+  "sensors": [
+    "mmwave",
+    "imu"
+  ],
+  "mode": "serial",
+  "total_frames": 270,
+  "num_trials": 18
+}

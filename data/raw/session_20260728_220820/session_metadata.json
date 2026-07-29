@@ -1,0 +1,17 @@
+{
+  "session": "20260728_220820",
+  "gestures": [
+    "clockwise",
+    "anticlockwise"
+  ],
+  "trials_per_gesture": 5,
+  "duration_s": 2.0,
+  "fps": 10,
+  "sensors": [
+    "mmwave",
+    "imu"
+  ],
+  "mode": "serial",
+  "total_frames": 200,
+  "num_trials": 10
+}
