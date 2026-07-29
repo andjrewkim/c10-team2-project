@@ -39,21 +39,36 @@ def extract_mmwave_features(frame: dict) -> list[float]:
     ]
 
 
+def _get_imu_channel(data: dict, name: str) -> float:
+    val = data.get(name, None)
+    if val is not None:
+        return float(val)
+    if name in ("accel_x", "accel_y", "accel_z"):
+        lst = data.get("accel", [])
+        idx = {"accel_x": 0, "accel_y": 1, "accel_z": 2}[name]
+        return float(lst[idx]) if isinstance(lst, list) and len(lst) > idx else 0.0
+    if name in ("gyro_x", "gyro_y", "gyro_z"):
+        lst = data.get("gyro", [])
+        idx = {"gyro_x": 0, "gyro_y": 1, "gyro_z": 2}[name]
+        return float(lst[idx]) if isinstance(lst, list) and len(lst) > idx else 0.0
+    return 0.0
+
+
 def extract_imu_features(frame: dict) -> list[float]:
     im = frame.get("imu", {})
     data = im.get("data", {})
-    accel = data.get("accel", [0, 0, 0])
-    gyro = data.get("gyro", [0, 0, 0])
+    ax = _get_imu_channel(data, "accel_x")
+    ay = _get_imu_channel(data, "accel_y")
+    az = _get_imu_channel(data, "accel_z")
+    gx = _get_imu_channel(data, "gyro_x")
+    gy = _get_imu_channel(data, "gyro_y")
+    gz = _get_imu_channel(data, "gyro_z")
 
-    features = [
-        float(accel[0]) if len(accel) > 0 else 0.0,
-        float(accel[1]) if len(accel) > 1 else 0.0,
-        float(accel[2]) if len(accel) > 2 else 0.0,
-        float(gyro[0]) if len(gyro) > 0 else 0.0,
-        float(gyro[1]) if len(gyro) > 1 else 0.0,
-        float(gyro[2]) if len(gyro) > 2 else 0.0,
+    return [
+        ax, ay, az, gx, gy, gz,
+        np.sqrt(gx*gx + gy*gy + gz*gz),   # gyro magnitude
+        np.sqrt(ax*ax + ay*ay + az*az),   # accel magnitude
     ]
-    return features
 
 
 def extract_uwb_features_from_data(data: dict) -> list[float]:
@@ -119,14 +134,27 @@ def extract_window_features(
         feature_names.extend([f"mm_std_{n}" for n in MM_FEATURE_NAMES])
         feature_names.append("mm_path_length")
     if imu_sensors:
-        imu_base = ["accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"]
+        imu_base = [
+            "accel_x", "accel_y", "accel_z",
+            "gyro_x", "gyro_y", "gyro_z",
+            "gyro_mag", "accel_mag",
+        ]
         feature_names.extend([f"imu_mean_{b}" for b in imu_base])
         feature_names.extend([f"imu_std_{b}" for b in imu_base])
+        feature_names.extend([f"imu_rms_{b}" for b in imu_base])
+        feature_names.extend([f"imu_zcr_{b}" for b in imu_base])
+        n_dt = window_size - 1
+        feature_names.extend([f"imu_delta_{n}_t{t}" for n in ["accel_x","accel_y","accel_z"] for t in range(n_dt)])
+        feature_names.extend([f"imu_delta_{n}_t{t}" for n in ["gyro_x","gyro_y","gyro_z"] for t in range(n_dt)])
+        feature_names.extend([f"imu_delta_{n}_t{t}" for n in ["gyro_mag","accel_mag"] for t in range(n_dt)])
     for uk in uwb_keys:
         feature_names.extend([
             f"{uk}_num_ranges", f"{uk}_mean_range_m", f"{uk}_std_range_m",
             f"{uk}_min_range_m", f"{uk}_max_range_m", f"{uk}_median_range_m",
         ])
+
+    ACCEL_IDX = slice(0, 3)
+    GYRO_IDX = slice(3, 6)
 
     for i in range(0, len(frames) - window_size + 1, stride):
         window = frames[i:i + window_size]
@@ -139,13 +167,23 @@ def extract_window_features(
                 features.append(float(np.mean(mm_features[:, col])))
             for col in range(mm_features.shape[1]):
                 features.append(float(np.std(mm_features[:, col])))
+            mm_path_len = _total_path_length(window)
+            features.append(mm_path_len)
 
         if imu_sensors:
-            imu_features = np.array([extract_imu_features(f) for f in window])
-            for col in range(imu_features.shape[1]):
-                features.append(float(np.mean(imu_features[:, col])))
-            for col in range(imu_features.shape[1]):
-                features.append(float(np.std(imu_features[:, col])))
+            per_frame = np.array([extract_imu_features(f) for f in window])
+            features.extend(np.mean(per_frame, axis=0).tolist())
+            features.extend(np.std(per_frame, axis=0).tolist())
+            features.extend(np.sqrt(np.mean(per_frame ** 2, axis=0)).tolist())
+            for c in range(8):
+                centered = per_frame[:, c] - np.mean(per_frame[:, c])
+                if len(centered) < 2:
+                    features.append(0.0)
+                else:
+                    features.append(float(np.sum((centered[:-1] * centered[1:]) < 0)) / window_size)
+            features.extend((per_frame[1:, ACCEL_IDX] - per_frame[:-1, ACCEL_IDX]).flatten().tolist())
+            features.extend((per_frame[1:, GYRO_IDX] - per_frame[:-1, GYRO_IDX]).flatten().tolist())
+            features.extend((per_frame[1:, 6:8] - per_frame[:-1, 6:8]).flatten().tolist())
 
         for uk in uwb_keys:
             uwb_data = [f.get(uk, {}).get("data", {}) for f in window]
