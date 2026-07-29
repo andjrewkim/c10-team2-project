@@ -111,6 +111,20 @@ def extract_window_features(
         features = list(np.mean(feats, axis=0))
         features.extend(np.std(feats, axis=0).tolist())
 
+        # RMS (root-mean-square) — captures signal energy regardless of direction
+        features.extend(np.sqrt(np.mean(feats ** 2, axis=0)).tolist())
+
+        # Zero-crossing rate — counts how often each channel oscillates
+        # Soli (finger rub) produces rapid oscillations → high ZCR
+        # T-arm (static) produces no oscillation → near-zero ZCR
+        for c in range(8):
+            centered = feats[:, c] - np.mean(feats[:, c])
+            if len(centered) < 2:
+                features.append(0.0)
+            else:
+                crossings = np.sum((centered[:-1] * centered[1:]) < 0)
+                features.append(float(crossings) / window_size)
+
         # Accel deltas (3 channels, window-1 time steps)
         features.extend((feats[1:, ACCEL_IDX] - feats[:-1, ACCEL_IDX]).flatten().tolist())
         # Gyro deltas (3 channels, window-1 time steps)
@@ -128,6 +142,8 @@ def extract_window_features(
     feature_names = (
         [f"mean_{n}" for n in base_names]
         + [f"std_{n}" for n in base_names]
+        + [f"rms_{n}" for n in base_names]
+        + [f"zcr_{n}" for n in base_names]
         + accel_delta_names
         + gyro_delta_names
         + mag_delta_names

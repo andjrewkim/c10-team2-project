@@ -90,16 +90,28 @@ def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]
 
 
 def _movement_score(readings: list, sensor_type: str) -> float:
+    """Movement score blending accel deltas + gyro magnitude.
+
+    Pure accel misses small rotational gestures like soli (finger rub).
+    The gyro component catches rotational movement that the wrist-mounted
+    IMU picks up even when the hand stays mostly still in space.
+    """
     if sensor_type == "imu":
         if len(readings) < 2:
             return 0.0
-        accel_deltas = []
+        accel_deltas: list[float] = []
+        gyro_mags: list[float] = []
         for i in range(1, len(readings)):
-            a0 = readings[i-1].data.get("accel", [0,0,0])
-            a1 = readings[i].data.get("accel", [0,0,0])
-            d = abs(a1[0]-a0[0]) + abs(a1[1]-a0[1]) + abs(a1[2]-a0[2])
+            a0 = readings[i-1].data.get("accel", [0, 0, 0])
+            a1 = readings[i].data.get("accel", [0, 0, 0])
+            d = abs(a1[0] - a0[0]) + abs(a1[1] - a0[1]) + abs(a1[2] - a0[2])
             accel_deltas.append(d)
-        return float(np.mean(accel_deltas)) if accel_deltas else 0.0
+            g = readings[i].data.get("gyro", [0, 0, 0])
+            gyro_mags.append(abs(g[0]) + abs(g[1]) + abs(g[2]))
+        accel_score = float(np.mean(accel_deltas)) if accel_deltas else 0.0
+        gyro_score = float(np.mean(gyro_mags)) if gyro_mags else 0.0
+        # Blend: accel catches gross motion, gyro catches subtle rotation
+        return accel_score + gyro_score * 0.3
     elif sensor_type == "mmwave":
         cents = []
         for r in readings:
@@ -135,6 +147,20 @@ def _compute_features(readings: list, sensor_type: str) -> list[float]:
 
         out = list(np.mean(feats, axis=0))
         out.extend(np.std(feats, axis=0).tolist())
+
+        # RMS — signal energy independent of direction
+        out.extend(np.sqrt(np.mean(feats ** 2, axis=0)).tolist())
+
+        # Zero-crossing rate — oscillation frequency (soli oscillates fast, t-arm doesn't)
+        for c in range(8):
+            col = feats[:, c]
+            centered = col - np.mean(col)
+            if len(centered) < 2:
+                out.append(0.0)
+            else:
+                crossings = np.sum((centered[:-1] * centered[1:]) < 0)
+                out.append(float(crossings) / len(col))
+
         out.extend((feats[1:, 0:3] - feats[:-1, 0:3]).flatten().tolist())
         out.extend((feats[1:, 3:6] - feats[:-1, 3:6]).flatten().tolist())
         out.extend((feats[1:, 6:8] - feats[:-1, 6:8]).flatten().tolist())
@@ -172,9 +198,11 @@ def _predict(pipeline, gestures, features):
 def _check_feature_dims(n_computed: int, n_expected: int, sensor_names: list[str]) -> str | None:
     if n_computed == n_expected:
         return None
+    # IMU: 8 means + 8 stds + 8 RMS + 8 ZCR + 8×(W-1) deltas = 32 + 8×(W-1)
+    approx_w = (n_computed - 32) // 8 + 1 if n_computed >= 32 else 0
     return (
         f"Feature mismatch: computed {n_computed} features, but model expects {n_expected}. "
-        f"Check --window ({n_computed // 8 - 1} for IMU, or use different sensor)"
+        f"Check --window (~{approx_w} for IMU, or use different sensor)"
     )
 
 
