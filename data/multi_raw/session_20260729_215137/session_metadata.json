@@ -1,0 +1,23 @@
+{
+  "session": "20260729_215137",
+  "gestures": [
+    "bye-bye",
+    "one-arm-boxing",
+    "two-arm-boxing",
+    "raise-arms",
+    "making-fist-open",
+    "palm-up-down"
+  ],
+  "trials_per_gesture": 15,
+  "duration_s": 2.0,
+  "fps": 10,
+  "sensors": [
+    "mmwave",
+    "imu"
+  ],
+  "mode": "serial",
+  "alternate": true,
+  "collector": "student03",
+  "total_frames": 1801,
+  "num_trials": 90
+}
