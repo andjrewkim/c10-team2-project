@@ -148,18 +148,24 @@ def main() -> None:
         csv_path = out_dir / f"combined_{timestamp}_{suffix}.csv"
         suffix += 1
 
-    # Discover all sensor keys across frames
+    # Discover all sensor keys and extra flat fields across frames
     sensor_keys = set()
+    extra_flat_fields = set()
+    skip_base = {"timestamp", "gesture", "trial", "elapsed", "dataset_source", "frame_index"}
     for frame in all_frames:
         for k, v in frame.items():
-            if k in ("timestamp", "gesture", "trial", "elapsed", "dataset_source", "frame_index"):
+            if k in skip_base:
                 continue
             if isinstance(v, dict) and "data" in v:
                 sensor_keys.add(k)
+            else:
+                extra_flat_fields.add(k)
     sensor_keys = sorted(sensor_keys)
 
     # Build dynamic fieldnames
     fieldnames = ["frame_index", "timestamp", "gesture", "trial", "elapsed", "dataset_source"]
+    for ef in sorted(extra_flat_fields):
+        fieldnames.append(ef)
     for sk in sensor_keys:
         fieldnames.append(f"{sk}_confidence")
         sample_data = {}
@@ -184,6 +190,14 @@ def main() -> None:
                 "elapsed": round(frame.get("elapsed", 0.0), 6),
                 "dataset_source": frame.get("dataset_source", ""),
             }
+            for ef in extra_flat_fields:
+                val = frame.get(ef)
+                if val is None:
+                    row[ef] = ""
+                elif isinstance(val, (list, dict)):
+                    row[ef] = json.dumps(val)
+                else:
+                    row[ef] = val
             for sk in sensor_keys:
                 sensor = frame.get(sk, {})
                 row[f"{sk}_confidence"] = sensor.get("confidence", 0.0) if isinstance(sensor, dict) else 0.0
