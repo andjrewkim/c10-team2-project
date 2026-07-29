@@ -1,0 +1,30 @@
+{
+  "session": "20260728_235002",
+  "gestures": [
+    "pull",
+    "push",
+    "clockwise",
+    "anticlockwise",
+    "right",
+    "left",
+    "bye-bye",
+    "one-arm-boxing",
+    "clapping",
+    "two-arm-boxing",
+    "t-arm",
+    "raise-arms",
+    "soli",
+    "making-fist-open",
+    "palm-up-down"
+  ],
+  "trials_per_gesture": 15,
+  "duration_s": 2.0,
+  "fps": 10,
+  "sensors": [
+    "mmwave",
+    "imu"
+  ],
+  "mode": "serial",
+  "total_frames": 4160,
+  "num_trials": 208
+}

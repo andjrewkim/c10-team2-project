@@ -148,14 +148,34 @@ def main() -> None:
         csv_path = out_dir / f"combined_{timestamp}_{suffix}.csv"
         suffix += 1
 
-    fieldnames = ["frame_index", "timestamp", "gesture", "trial", "elapsed",
-                  "dataset_source", "confidence", "num_points", "points", "range_profile", "motion_score"]
+    # Discover all sensor keys across frames
+    sensor_keys = set()
+    for frame in all_frames:
+        for k, v in frame.items():
+            if k in ("timestamp", "gesture", "trial", "elapsed", "dataset_source", "frame_index"):
+                continue
+            if isinstance(v, dict) and "data" in v:
+                sensor_keys.add(k)
+    sensor_keys = sorted(sensor_keys)
+
+    # Build dynamic fieldnames
+    fieldnames = ["frame_index", "timestamp", "gesture", "trial", "elapsed", "dataset_source"]
+    for sk in sensor_keys:
+        fieldnames.append(f"{sk}_confidence")
+        sample_data = {}
+        for f in all_frames:
+            if sk in f:
+                sample_data = f[sk].get("data", {})
+                break
+        for dk in sample_data:
+            if dk in ("frame_index", "confidence"):
+                continue
+            fieldnames.append(f"{sk}_{dk}")
+
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for idx, frame in enumerate(all_frames):
-            mm = frame.get("mmwave", {})
-            d = mm.get("data", {}) if isinstance(mm, dict) else {}
             row = {
                 "frame_index": idx,
                 "timestamp": frame.get("timestamp", ""),
@@ -163,12 +183,20 @@ def main() -> None:
                 "trial": frame.get("trial", 0),
                 "elapsed": round(frame.get("elapsed", 0.0), 6),
                 "dataset_source": frame.get("dataset_source", ""),
-                "confidence": mm.get("confidence", 0.0) if isinstance(mm, dict) else 0.0,
-                "num_points": d.get("num_points", len(d.get("points", []))),
-                "points": json.dumps(d.get("points", [])),
-                "range_profile": json.dumps(d.get("range_profile")),
-                "motion_score": d.get("motion_score", 0.0),
             }
+            for sk in sensor_keys:
+                sensor = frame.get(sk, {})
+                row[f"{sk}_confidence"] = sensor.get("confidence", 0.0) if isinstance(sensor, dict) else 0.0
+                data = sensor.get("data", {}) if isinstance(sensor, dict) else {}
+                for dk, dv in data.items():
+                    if dk in ("frame_index", "confidence"):
+                        continue
+                    if isinstance(dv, (list, dict)):
+                        row[f"{sk}_{dk}"] = json.dumps(dv)
+                    elif dv is None:
+                        row[f"{sk}_{dk}"] = ""
+                    else:
+                        row[f"{sk}_{dk}"] = dv
             writer.writerow(row)
     print(f"\nSaved: {csv_path} ({len(all_frames)} rows)")
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -224,24 +223,48 @@ def _load_all_frames(input_path: Path) -> list[dict]:
 
     elif input_path.suffix == ".csv":
         with open(input_path, newline="") as f:
-            for row in csv.DictReader(f):
+            reader = csv.DictReader(f)
+            all_cols = reader.fieldnames or []
+            # Identify sensor prefixes: columns ending with _confidence (excluding base cols)
+            base_cols = {"frame_index", "timestamp", "gesture", "trial", "elapsed", "dataset_source"}
+            sensor_prefixes = set()
+            for col in all_cols:
+                if col.endswith("_confidence") and col not in base_cols:
+                    sensor_prefixes.add(col[:-len("_confidence")])
+            for row in reader:
                 frame = {
                     "timestamp": row["timestamp"],
                     "gesture": row["gesture"],
                     "trial": int(row["trial"]),
                     "elapsed": float(row["elapsed"]),
                 }
-                try:
-                    pts = json.loads(row.get("points", "[]")) if row.get("points") and row["points"] != "null" else []
-                except json.JSONDecodeError:
-                    pts = []
-                frame["mmwave"] = {
-                    "data": {
-                        "num_points": int(row.get("num_points", len(pts))),
-                        "points": pts,
-                    },
-                    "sensor_type": "mmwave",
-                }
+                for prefix in sorted(sensor_prefixes):
+                    data = {}
+                    for col in all_cols:
+                        if col.startswith(prefix + "_") and col != f"{prefix}_confidence":
+                            field_name = col[len(prefix) + 1:]
+                            val = row.get(col, "")
+                            if val == "" or val == "null":
+                                data[field_name] = None
+                            elif val.startswith(("[", "{")):
+                                try:
+                                    data[field_name] = json.loads(val)
+                                except json.JSONDecodeError:
+                                    data[field_name] = val
+                            else:
+                                try:
+                                    data[field_name] = int(val)
+                                except ValueError:
+                                    try:
+                                        data[field_name] = float(val)
+                                    except ValueError:
+                                        data[field_name] = val
+                    confidence = float(row.get(f"{prefix}_confidence", 0.0))
+                    frame[prefix] = {
+                        "data": data,
+                        "confidence": confidence,
+                        "sensor_type": prefix,
+                    }
                 frames.append(frame)
 
     elif input_path.suffix == ".json":

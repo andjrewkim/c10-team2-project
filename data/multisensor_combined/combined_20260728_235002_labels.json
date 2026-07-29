@@ -1,0 +1,36 @@
+{
+  "label_to_int": {
+    "anticlockwise": 0,
+    "bye-bye": 1,
+    "clapping": 2,
+    "clockwise": 3,
+    "left": 4,
+    "making-fist-open": 5,
+    "one-arm-boxing": 6,
+    "palm-up-down": 7,
+    "pull": 8,
+    "push": 9,
+    "raise-arms": 10,
+    "right": 11,
+    "soli": 12,
+    "t-arm": 13,
+    "two-arm-boxing": 14
+  },
+  "int_to_label": {
+    "0": "anticlockwise",
+    "1": "bye-bye",
+    "2": "clapping",
+    "3": "clockwise",
+    "4": "left",
+    "5": "making-fist-open",
+    "6": "one-arm-boxing",
+    "7": "palm-up-down",
+    "8": "pull",
+    "9": "push",
+    "10": "raise-arms",
+    "11": "right",
+    "12": "soli",
+    "13": "t-arm",
+    "14": "two-arm-boxing"
+  }
+}
