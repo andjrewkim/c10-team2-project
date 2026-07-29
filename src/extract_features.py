@@ -11,7 +11,8 @@ from sklearn.model_selection import train_test_split
 
 
 MM_FEATURE_NAMES = [
-    "num_points", "mean_x", "std_x", "min_x", "mean_y", "std_y", "range_profile"
+    "num_points", "mean_x", "std_x", "min_x", "mean_y", "std_y", "range_profile",
+    "distance_from_origin",
 ]
 
 

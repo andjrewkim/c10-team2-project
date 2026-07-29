@@ -1,0 +1,23 @@
+{
+  "session": "20260729_213440",
+  "gestures": [
+    "pull",
+    "push",
+    "clockwise",
+    "anticlockwise",
+    "right",
+    "left"
+  ],
+  "trials_per_gesture": 15,
+  "duration_s": 2.0,
+  "fps": 10,
+  "sensors": [
+    "mmwave",
+    "imu"
+  ],
+  "mode": "serial",
+  "alternate": true,
+  "collector": "student03",
+  "total_frames": 1800,
+  "num_trials": 90
+}

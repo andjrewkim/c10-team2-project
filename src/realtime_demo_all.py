@@ -18,12 +18,6 @@ SENSOR_REGISTRY = {
     "uwb": UwbReader,
 }
 
-SENSOR_FEATURE_COUNTS = {
-    "mmwave": 13,  # 6 per-frame features → mean(6) + std(6) + path_length(1)
-    "imu": 6,
-    "uwb": 6,
-}
-
 # IMU processing parameters (set from CLI args before starting)
 _gyro_gain: float = 1.0
 _gyro_deadband: float = 0.0
@@ -35,14 +29,17 @@ def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]
         data = reading.data
         points = data.get("points", [])
         num_points = data.get("num_points", len(points))
+        range_profile = data.get("range_profile", [])
         if not points:
-            return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0]
+            return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         xs = np.array([p.get("x", 0) for p in points])
         ys = np.array([p.get("y", 0) for p in points])
         return [
             float(num_points),
             float(np.mean(xs)), float(np.std(xs)),
+            float(np.min(xs)),
             float(np.mean(ys)), float(np.std(ys)),
+            float(range_profile[0]) if range_profile else 0.0,
             float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)),
         ]
     elif sensor_type == "imu":
@@ -167,8 +164,14 @@ def _gather_readings(window: list[dict], name: str) -> list:
 
 def _compute_features(readings: list, sensor_type: str) -> list[float]:
     sensor_feats = np.array([extract_features_from_reading(r, sensor_type) for r in readings])
+    n_per_frame = sensor_feats.shape[1] if len(sensor_feats) > 0 else 0
     if len(sensor_feats) == 0:
-        n = (6 + 2) + (6 + 2) + ((3 + 3 + 2) * (len(readings) - 1)) if sensor_type == "imu" else 13
+        if sensor_type == "imu":
+            n = (6 + 2) + (6 + 2) + ((3 + 3 + 2) * (len(readings) - 1))
+        elif sensor_type == "mmwave":
+            n = 8 + 8 + 1
+        else:
+            n = 6 + 6  # uwb: mean + std (no path_length)
         return [0.0] * n
 
     if sensor_type == "imu":
