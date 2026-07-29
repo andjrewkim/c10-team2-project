@@ -659,7 +659,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         root.after(25, poll)
                         return
                     else:
-                        gesture_label.config(text="OBSERVING...", fg=PALETTE["warn"])
+                        gesture_label.config(fg=PALETTE["warn"])
                         error_label.config(text=f"observing... {punch_count} punches", fg=PALETTE["fg_dim"])
                         root.after(25, poll)
                         return
@@ -725,7 +725,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                                 punch_count = 0
                                 was_in_punch = False
                                 punch_cooldown = 0
-                                gesture_label.config(text="OBSERVING...", fg=PALETTE["warn"])
+                                gesture_label.config(fg=PALETTE["warn"])
                                 error_label.config(text=f"observing for punches ({args.boxing_delay_frames} frames)...", fg=PALETTE["fg_dim"])
                         else:
                             display_upper = smoothed.upper()
@@ -793,10 +793,10 @@ def main() -> None:
                         help="Per-frame accel delta threshold for detecting a punch (default: 1.0)")
     parser.add_argument("--boxing-delay-frames", type=int, default=60,
                         help="Frames to observe after boxing is detected before classifying one-arm vs two-arm (default: 40)")
-    parser.add_argument("--min-boxing-movement", type=float, default=1.0,
-                        help="Minimum movement score to trigger boxing observation (default: 1.0)")
-    parser.add_argument("--accel-gain", type=float, default=1.15,
-                        help="Scale factor for accelerometer values (default: 1.15 — tiny emphasis on linear movement)")
+    parser.add_argument("--min-boxing-movement", type=float, default=0.8,
+                        help="Minimum movement score to trigger boxing observation (default: 0.8)")
+    parser.add_argument("--accel-gain", type=float, default=1.05,
+                        help="Scale factor for accelerometer values (default: 1.05 — tiny emphasis on linear movement)")
     parser.add_argument("--gyro-gain", type=float, default=0.6,
                         help="Scale factor for gyro values before model (default: 0.6)")
     parser.add_argument("--gyro-deadband", type=float, default=2.0,
