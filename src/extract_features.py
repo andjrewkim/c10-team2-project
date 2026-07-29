@@ -238,6 +238,15 @@ def _load_all_frames(input_path: Path) -> list[dict]:
                     "trial": int(row["trial"]),
                     "elapsed": float(row["elapsed"]),
                 }
+                # Copy extra non-sensor columns (e.g. collector, dataset_source)
+                for col in all_cols:
+                    if col in base_cols or col.endswith("_confidence"):
+                        continue
+                    if any(col.startswith(p + "_") for p in sensor_prefixes):
+                        continue
+                    val = row.get(col, "")
+                    if val and val != "null":
+                        frame[col] = val
                 for prefix in sorted(sensor_prefixes):
                     data = {}
                     for col in all_cols:
@@ -296,6 +305,8 @@ def main() -> None:
     parser.add_argument("--test-size", type=float, default=0.2,
                         help="Test set proportion")
     parser.add_argument("--random-state", type=int, default=42)
+    parser.add_argument("--collector", default=None,
+                        help="Only include frames from this collector (default: all)")
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -309,6 +320,14 @@ def main() -> None:
         print("No frames loaded.")
         return
     print(f"Loaded {len(frames)} frames")
+
+    if args.collector:
+        before = len(frames)
+        frames = [f for f in frames if f.get("collector") == args.collector]
+        print(f"  Filtered to collector '{args.collector}': {len(frames)} / {before} frames")
+        if not frames:
+            print("Error: no frames match the specified collector.")
+            return
 
     mm = frames[0].get("mmwave", {})
     d = mm.get("data", {}) if isinstance(mm, dict) else {}

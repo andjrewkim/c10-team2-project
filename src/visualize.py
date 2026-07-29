@@ -79,6 +79,8 @@ def load_session_csvs(session_dir: Path) -> dict[str, list[dict]]:
             "trial": int(ev["trial"]),
             "elapsed": float(ev["elapsed"]),
         }
+        if "collector" in ev and ev["collector"]:
+            frame["collector"] = ev["collector"]
         for sname, sdict_list in sensor_rows.items():
             if idx < len(sdict_list):
                 sdict = dict(sdict_list[idx])

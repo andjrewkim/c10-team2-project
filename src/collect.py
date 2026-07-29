@@ -339,7 +339,7 @@ SENSOR_CSV_FIELDS: dict[str, list[str]] = {
     ],
 }
 
-EVENTS_FIELDS = ["frame_index", "timestamp", "gesture", "trial", "elapsed"]
+EVENTS_FIELDS = ["frame_index", "timestamp", "gesture", "trial", "elapsed", "collector"]
 TRIALS_FIELDS = ["trial_index", "gesture", "trial_num", "start_timestamp", "end_timestamp", "num_frames"]
 
 
@@ -399,9 +399,9 @@ def collect_gesture(
 ) -> list[dict[str, Any]]:
     frames: list[dict[str, Any]] = []
 
-    print(f"  Recording '{gesture}' trial {trial + 1}/{total_trials} for {duration_s}s...")
+    print(f"  Recording '{gesture.upper()}' trial {trial + 1}/{total_trials} for {duration_s}s...")
     if gesture != "none" and prompt:
-        input(f"  Press Enter when ready to perform '{gesture}'...")
+        input(f"  Press Enter when ready to perform '{gesture.upper()}'...")
 
     interval = 1.0 / max(fps, 1)
     start_time = time.monotonic()
@@ -440,8 +440,10 @@ def collect_gesture(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Collect gesture data")
-    parser.add_argument("--gestures", nargs="+", default=["push", "pull"],
-                        help="Gestures to collect")
+    parser.add_argument("--gestures", nargs="+", default=None,
+                        help="Gestures to collect (default: push pull; with --alternate: pull push clockwise anticlockwise right left)")
+    parser.add_argument("--alternate", action="store_true",
+                        help="Alternate between gesture pairs for each successful trial")
     parser.add_argument("--duration", type=float, default=2.0,
                         help="Seconds per trial")
     parser.add_argument("--trials", type=int, default=3,
@@ -487,7 +489,16 @@ def main() -> None:
 
     parser.add_argument("--no-prompt", action="store_true",
                         help="Skip 'press enter' prompts (for automation)")
+    parser.add_argument("--collector", default="",
+                        help="Name of the person collecting data (for later filtering)")
     args = parser.parse_args()
+
+    if args.alternate:
+        if args.gestures is None:
+            args.gestures = ["pull", "push", "clockwise", "anticlockwise", "right", "left"]
+    else:
+        if args.gestures is None:
+            args.gestures = ["push", "pull"]
 
     session_time = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     session_dir = Path(args.output) / f"session_{session_time}"
@@ -541,63 +552,93 @@ def main() -> None:
 
     trial_index = 0
     total_frames = 0
-    try:
-        for gesture in args.gestures:
-            if gesture not in ALL_GESTURES:
-                print(f"  Warning: '{gesture}' not in standard gesture list")
-            for trial_num in range(args.trials):
-                if args.countdown > 0 and args.no_prompt:
-                    print(f"  Starting in {args.countdown}s...")
-                    time.sleep(args.countdown)
 
-                trial_start_ts = datetime.now(timezone.utc).isoformat()
-                frames = collect_gesture(
-                    reader_map, gesture, args.duration,
-                    args.fps, trial_num, total_trials=args.trials,
-                    prompt=not args.no_prompt,
-                )
-                trial_end_ts = datetime.now(timezone.utc).isoformat()
+    def _collect_one_trial(gesture: str, trial_num: int, target_trials: int) -> bool:
+        nonlocal trial_index, total_frames
+        attempt = 0
+        while True:
+            if args.countdown > 0 and args.no_prompt:
+                print(f"  Starting in {args.countdown}s...")
+                time.sleep(args.countdown)
 
-                keep = input(f"  Keep this '{gesture}' trial {trial_num} ({len(frames)} frames)? (y/n): ").strip().lower()
-                if keep != "y":
-                    print(f"  Discarded trial")
-                    continue
+            trial_start_ts = datetime.now(timezone.utc).isoformat()
+            frames = collect_gesture(
+                reader_map, gesture, args.duration,
+                args.fps, trial_num, total_trials=target_trials,
+                prompt=not args.no_prompt,
+            )
+            trial_end_ts = datetime.now(timezone.utc).isoformat()
 
-                for f in frames:
-                    events_writer.writerow({
-                        "frame_index": f["_frame_index"],
-                        "timestamp": f["timestamp"],
-                        "gesture": f["gesture"],
-                        "trial": f["trial"],
-                        "elapsed": round(f["elapsed"], 6),
-                    })
+            answer = input(f"  Keep this '{gesture.upper()}' trial {trial_num+1}/{target_trials} (attempt {attempt+1}) ({len(frames)} frames)? (y/n): ").strip().lower()
+            attempt += 1
+            if answer != "y":
+                print(f"  Discarded, will re-collect")
+                continue
 
-                for name in args.sensors:
-                    for f in frames:
-                        entry = f.get(name, {})
-                        if "error" in entry:
-                            continue
-                        reading = Reading(
-                            sensor_id="",
-                            sensor_type=entry.get("sensor_type", name),
-                            data=entry.get("data", {}),
-                            confidence=entry.get("confidence", 0.0),
-                        )
-                        row = _flatten_reading(reading, f["_frame_index"])
-                        writers[name].writerow(row)
-
-                trials_writer.writerow({
-                    "trial_index": trial_index,
-                    "gesture": gesture,
-                    "trial_num": trial_num,
-                    "start_timestamp": trial_start_ts,
-                    "end_timestamp": trial_end_ts,
-                    "num_frames": len(frames),
+            for f in frames:
+                events_writer.writerow({
+                    "frame_index": f["_frame_index"],
+                    "timestamp": f["timestamp"],
+                    "gesture": f["gesture"],
+                    "trial": f["trial"],
+                    "elapsed": round(f["elapsed"], 6),
+                    "collector": args.collector,
                 })
 
-                total_frames += len(frames)
-                trial_index += 1
+            for name in args.sensors:
+                for f in frames:
+                    entry = f.get(name, {})
+                    if "error" in entry:
+                        continue
+                    reading = Reading(
+                        sensor_id="",
+                        sensor_type=entry.get("sensor_type", name),
+                        data=entry.get("data", {}),
+                        confidence=entry.get("confidence", 0.0),
+                    )
+                    row = _flatten_reading(reading, f["_frame_index"])
+                    writers[name].writerow(row)
 
+            trials_writer.writerow({
+                "trial_index": trial_index,
+                "gesture": gesture,
+                "trial_num": trial_num,
+                "start_timestamp": trial_start_ts,
+                "end_timestamp": trial_end_ts,
+                "num_frames": len(frames),
+            })
+
+            total_frames += len(frames)
+            trial_index += 1
+            return True
+
+    try:
+        if args.alternate:
+            for i in range(0, len(args.gestures), 2):
+                pair = args.gestures[i:i + 2]
+                if len(pair) == 1:
+                    pair = [pair[0], pair[0]]
+                g1, g2 = pair
+                print(f"\n  Alternating: {g1.upper()} / {g2.upper()}")
+                kept1 = 0
+                kept2 = 0
+                turn = 0
+                while kept1 < args.trials or kept2 < args.trials:
+                    if turn == 0 and kept1 < args.trials:
+                        _collect_one_trial(g1, kept1, args.trials)
+                        kept1 += 1
+                    elif turn == 1 and kept2 < args.trials:
+                        _collect_one_trial(g2, kept2, args.trials)
+                        kept2 += 1
+                    turn = 1 - turn
+        else:
+            for gesture in args.gestures:
+                if gesture not in ALL_GESTURES:
+                    print(f"  Warning: '{gesture.upper()}' not in standard gesture list")
+                kept = 0
+                while kept < args.trials:
+                    _collect_one_trial(gesture, kept, args.trials)
+                    kept += 1
         print("=" * 60)
 
     finally:
@@ -620,6 +661,8 @@ def main() -> None:
         "fps": args.fps,
         "sensors": args.sensors,
         "mode": args.mode,
+        "alternate": args.alternate,
+        "collector": args.collector,
         "total_frames": total_frames,
         "num_trials": trial_index,
     }

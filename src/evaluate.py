@@ -74,6 +74,15 @@ def _load_csv_as_trials(csv_path: Path) -> dict[str, list[dict]]:
                 "trial": int(row["trial"]),
                 "elapsed": float(row["elapsed"]),
             }
+            # Copy extra non-sensor columns (e.g. collector, dataset_source)
+            for col in all_cols:
+                if col in base_cols or col.endswith("_confidence"):
+                    continue
+                if any(col.startswith(p + "_") for p in sensor_prefixes):
+                    continue
+                val = row.get(col, "")
+                if val and val != "null":
+                    frame[col] = val
             for prefix in sorted(sensor_prefixes):
                 data = {}
                 for col in all_cols:
