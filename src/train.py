@@ -52,6 +52,15 @@ def _make_classifier(name: str, **params) -> Any:
     raise ValueError(f"Unknown classifier: {name}")
 
 
+def _pretty_name(name: str) -> str:
+    return {
+        "random_forest": "Random Forest",
+        "knn": "k-Nearest Neighbors",
+        "svm_rbf": "SVM with rbf kernel",
+        "svm_linear": "SVM Linear",
+    }.get(name, name)
+
+
 def _param_label(name: str, params: dict) -> str:
     if name == "random_forest":
         return f"rf_n{params['n_estimators']}_d{params['max_depth']}"
@@ -79,6 +88,9 @@ def main() -> None:
                         default=CLASSIFIER_NAMES,
                         choices=CLASSIFIER_NAMES,
                         help="Classifiers to train and compare")
+    parser.add_argument("--sensors", nargs="+", default=None,
+                        choices=["mmwave", "imu", "uwb"],
+                        help="Filter to features from these sensors only (default: all)")
 
     # Random Forest params
     parser.add_argument("--rf-n-estimators", type=int, nargs="+", default=[100],
@@ -132,6 +144,27 @@ def main() -> None:
     gestures = data["gestures"].tolist() if "gestures" in data else []
     label_map = data["label_map"].item() if "label_map" in data else {}
 
+    if args.sensors:
+        prefix_map = {"mmwave": "mm_", "imu": "imu_", "uwb": "uwb"}
+        keep = [i for i, fn in enumerate(feature_names)
+                if any(fn.startswith(prefix_map[s]) for s in args.sensors)]
+        if not keep:
+            print(f"Error: no features found for sensors {args.sensors}")
+            return
+        feature_names = [feature_names[i] for i in keep]
+        X_train = X_train[:, keep]
+        X_test = X_test[:, keep]
+        print(f"Filtered to sensors {args.sensors}: {len(feature_names)} features")
+
+    try:
+        from src.collect import ALL_GESTURES
+        _canonical = ALL_GESTURES
+        present = set(gestures)
+        ordered_gestures = [g for g in _canonical if g in present]
+        ordered_gestures += [g for g in gestures if g not in ordered_gestures]
+    except ImportError:
+        ordered_gestures = gestures
+
     print(f"Training data: {X_train.shape}")
     print(f"Test data:     {X_test.shape}")
     print(f"Classes:       {len(gestures)} ({', '.join(gestures)})")
@@ -146,6 +179,7 @@ def main() -> None:
     results = {}
     best_score = 0.0
     best_name = ""
+    best_classifier_name = ""
     best_pipeline = None
 
     for name in args.classifiers:
@@ -228,12 +262,17 @@ def main() -> None:
 
             # confusion matrix
             y_pred = pipeline.predict(X_test)
-            cm = confusion_matrix(y_test, y_pred)
-            fig, ax = plt.subplots(figsize=(6, 5))
-            display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=gestures)
-            display.plot(ax=ax, cmap="Blues", colorbar=False)
+            cm = confusion_matrix(y_test, y_pred, labels=[label_map[g] for g in ordered_gestures if g in label_map])
+            cm_norm = cm.astype("float") / cm.sum(axis=1, keepdims=True) * 100
+            n = len(ordered_gestures)
+            fig, ax = plt.subplots(figsize=(max(7, n * 0.8), max(6, n * 0.7)))
+            display = ConfusionMatrixDisplay(confusion_matrix=cm_norm, display_labels=ordered_gestures)
+            display.plot(ax=ax, cmap="Blues", colorbar=False, values_format=".1f",
+                         text_kw={"fontsize": max(6, min(14, 14 - n * 0.3))})
+            ax.set_xlabel("Predicted Gesture (%)")
+            ax.set_ylabel("Actual Gesture (%)")
             ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
-            ax.set_title(f"{label}\nTest accuracy: {test_acc:.3f}")
+            ax.set_title(f"{_pretty_name(name)}\nTest accuracy: {test_acc:.3f}")
             fig.tight_layout()
             cm_path = model_dir / f"{prefix}{label}_confusion_matrix.png"
             fig.savefig(cm_path, dpi=180)
@@ -254,17 +293,23 @@ def main() -> None:
             if test_acc > best_score:
                 best_score = test_acc
                 best_name = label
+                best_classifier_name = name
                 best_pipeline = pipeline
 
     # Save best model copy to top-level
     if best_pipeline is not None:
         y_pred = best_pipeline.predict(X_test)
-        cm = confusion_matrix(y_test, y_pred)
-        fig, ax = plt.subplots(figsize=(6, 5))
-        display = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=gestures)
-        display.plot(ax=ax, cmap="Blues", colorbar=False)
+        cm = confusion_matrix(y_test, y_pred, labels=[label_map[g] for g in ordered_gestures if g in label_map])
+        cm_norm = cm.astype("float") / cm.sum(axis=1, keepdims=True) * 100
+        n = len(ordered_gestures)
+        fig, ax = plt.subplots(figsize=(max(7, n * 0.8), max(6, n * 0.7)))
+        display = ConfusionMatrixDisplay(confusion_matrix=cm_norm, display_labels=ordered_gestures)
+        display.plot(ax=ax, cmap="Blues", colorbar=False, values_format=".1f",
+                     text_kw={"fontsize": max(6, min(14, 14 - n * 0.3))})
+        ax.set_xlabel("Predicted Gesture (%)")
+        ax.set_ylabel("Actual Gesture (%)")
         ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
-        ax.set_title(f"Best: {best_name}\nTest accuracy: {best_score:.3f}")
+        ax.set_title(f"Best: {_pretty_name(best_classifier_name)}\nTest accuracy: {best_score:.3f}")
         fig.tight_layout()
         best_cm_path = out_dir / "best_model_confusion_matrix.png"
         fig.savefig(best_cm_path, dpi=180)

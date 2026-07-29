@@ -1,0 +1,112 @@
+{
+  "num_train": 1464,
+  "num_test": 366,
+  "num_features": 15,
+  "feature_names": [
+    "mm_mean_num_points",
+    "mm_mean_mean_x",
+    "mm_mean_std_x",
+    "mm_mean_min_x",
+    "mm_mean_mean_y",
+    "mm_mean_std_y",
+    "mm_mean_range_profile",
+    "mm_std_num_points",
+    "mm_std_mean_x",
+    "mm_std_std_x",
+    "mm_std_min_x",
+    "mm_std_mean_y",
+    "mm_std_std_y",
+    "mm_std_range_profile",
+    "mm_path_length"
+  ],
+  "gestures": [
+    "anticlockwise",
+    "bye-bye",
+    "clapping",
+    "clockwise",
+    "left",
+    "making-fist-open",
+    "one-arm-boxing",
+    "palm-up-down",
+    "pull",
+    "push",
+    "raise-arms",
+    "right",
+    "soli",
+    "t-arm",
+    "two-arm-boxing"
+  ],
+  "label_map": {
+    "anticlockwise": 0,
+    "bye-bye": 1,
+    "clapping": 2,
+    "clockwise": 3,
+    "left": 4,
+    "making-fist-open": 5,
+    "one-arm-boxing": 6,
+    "palm-up-down": 7,
+    "pull": 8,
+    "push": 9,
+    "raise-arms": 10,
+    "right": 11,
+    "soli": 12,
+    "t-arm": 13,
+    "two-arm-boxing": 14
+  },
+  "results": {
+    "random_forest": {
+      "combos": [
+        {
+          "label": "rf_n100_d10",
+          "train_accuracy": 0.9685792349726776,
+          "test_accuracy": 0.5273224043715847,
+          "train_time_s": 0.373,
+          "params": "{'bootstrap': True, 'ccp_alpha': 0.0, 'class_weight': None, 'criterion': 'gini', 'max_depth': 10, 'max_features': 'sqrt', 'max_leaf_nodes': None, 'max_samples': None, 'min_impurity_decrease': 0.0, 'min_samples_leaf': 1, 'min_samples_split': 2, 'min_weight_fraction_leaf': 0.0, 'monotonic_cst': None, 'n_estimators': 100, 'n_jobs': -1, 'oob_score': False, 'random_state': 42, 'verbose': 0, 'warm_start': False}"
+        }
+      ],
+      "best_combo": "rf_n100_d10",
+      "best_score": 0.5273224043715847
+    },
+    "knn": {
+      "combos": [
+        {
+          "label": "knn_n5_wuniform_p2",
+          "train_accuracy": 0.523224043715847,
+          "test_accuracy": 0.34972677595628415,
+          "train_time_s": 0.019,
+          "params": "{'algorithm': 'auto', 'leaf_size': 30, 'metric': 'minkowski', 'metric_params': None, 'n_jobs': -1, 'n_neighbors': 5, 'p': 2, 'weights': 'uniform'}"
+        }
+      ],
+      "best_combo": "knn_n5_wuniform_p2",
+      "best_score": 0.34972677595628415
+    },
+    "svm_rbf": {
+      "combos": [
+        {
+          "label": "svm_rbf_c1.0_gscale",
+          "train_accuracy": 0.5204918032786885,
+          "test_accuracy": 0.36885245901639346,
+          "train_time_s": 0.898,
+          "params": "{'C': 1.0, 'break_ties': False, 'cache_size': 200, 'class_weight': None, 'coef0': 0.0, 'decision_function_shape': 'ovr', 'degree': 3, 'gamma': 'scale', 'kernel': 'rbf', 'max_iter': -1, 'probability': True, 'random_state': 42, 'shrinking': True, 'tol': 0.001, 'verbose': False}"
+        }
+      ],
+      "best_combo": "svm_rbf_c1.0_gscale",
+      "best_score": 0.36885245901639346
+    },
+    "svm_linear": {
+      "combos": [
+        {
+          "label": "svm_linear_c1.0",
+          "train_accuracy": 0.3927595628415301,
+          "test_accuracy": 0.33879781420765026,
+          "train_time_s": 1.021,
+          "params": "{'C': 1.0, 'break_ties': False, 'cache_size': 200, 'class_weight': None, 'coef0': 0.0, 'decision_function_shape': 'ovr', 'degree': 3, 'gamma': 'scale', 'kernel': 'linear', 'max_iter': -1, 'probability': True, 'random_state': 42, 'shrinking': True, 'tol': 0.001, 'verbose': False}"
+        }
+      ],
+      "best_combo": "svm_linear_c1.0",
+      "best_score": 0.33879781420765026
+    }
+  },
+  "best_model": "rf_n100_d10",
+  "best_score": 0.5273224043715847
+}

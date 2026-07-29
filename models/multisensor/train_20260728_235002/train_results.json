@@ -100,7 +100,7 @@
           "label": "rf_n100_d10",
           "train_accuracy": 0.9974779319041615,
           "test_accuracy": 0.8241206030150754,
-          "train_time_s": 0.407,
+          "train_time_s": 0.327,
           "params": "{'bootstrap': True, 'ccp_alpha': 0.0, 'class_weight': None, 'criterion': 'gini', 'max_depth': 10, 'max_features': 'sqrt', 'max_leaf_nodes': None, 'max_samples': None, 'min_impurity_decrease': 0.0, 'min_samples_leaf': 1, 'min_samples_split': 2, 'min_weight_fraction_leaf': 0.0, 'monotonic_cst': None, 'n_estimators': 100, 'n_jobs': -1, 'oob_score': False, 'random_state': 42, 'verbose': 0, 'warm_start': False}"
         }
       ],
@@ -126,7 +126,7 @@
           "label": "svm_rbf_c1.0_gscale",
           "train_accuracy": 0.8827238335435057,
           "test_accuracy": 0.7839195979899497,
-          "train_time_s": 0.5,
+          "train_time_s": 0.346,
           "params": "{'C': 1.0, 'break_ties': False, 'cache_size': 200, 'class_weight': None, 'coef0': 0.0, 'decision_function_shape': 'ovr', 'degree': 3, 'gamma': 'scale', 'kernel': 'rbf', 'max_iter': -1, 'probability': True, 'random_state': 42, 'shrinking': True, 'tol': 0.001, 'verbose': False}"
         }
       ],
@@ -139,7 +139,7 @@
           "label": "svm_linear_c1.0",
           "train_accuracy": 0.9646910466582598,
           "test_accuracy": 0.7939698492462312,
-          "train_time_s": 0.224,
+          "train_time_s": 0.207,
           "params": "{'C': 1.0, 'break_ties': False, 'cache_size': 200, 'class_weight': None, 'coef0': 0.0, 'decision_function_shape': 'ovr', 'degree': 3, 'gamma': 'scale', 'kernel': 'linear', 'max_iter': -1, 'probability': True, 'random_state': 42, 'shrinking': True, 'tol': 0.001, 'verbose': False}"
         }
       ],
