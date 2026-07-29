@@ -131,9 +131,12 @@ def _check_gyro_oscillation(readings: list) -> bool:
     Applies the same gyro gain + deadband as the feature pipeline so that
     the override is consistent with what the model actually sees.
 
-    Returns True if any gyro channel shows both:
-      - Non-trivial amplitude (RMS > 0.3 dps after deadband)
-      - High zero-crossing rate (> 0.20) — oscillatory, not a step/transient
+    Uses deliberately high thresholds so that only deliberate finger-rub
+    oscillation triggers the override — tiny wrist jitter at rest stays idle.
+
+    Returns True if at least 2 of 3 gyro channels show both:
+      - Strong amplitude (RMS > 1.5 dps after deadband)
+      - Fast oscillation (zero-crossing rate > 0.30)
     """
     if len(readings) < 4:
         return False
@@ -145,17 +148,18 @@ def _check_gyro_oscillation(readings: list) -> bool:
         gz = g[2] * _gyro_gain if abs(g[2] * _gyro_gain) >= _gyro_deadband else 0.0
         gyros.append([gx, gy, gz])
     gyro_data = np.array(gyros)
+    oscillating = 0
     for c in range(3):
         col = gyro_data[:, c]
         rms = float(np.sqrt(np.mean(col ** 2)))
-        if rms < 0.3:
+        if rms < 1.5:
             continue
         centered = col - np.mean(col)
         crossings = int(np.sum((centered[:-1] * centered[1:]) < 0))
         zcr = crossings / len(col) if len(col) > 0 else 0.0
-        if zcr > 0.20:
-            return True
-    return False
+        if zcr > 0.30:
+            oscillating += 1
+    return oscillating >= 2
 
 def _gather_readings(window: list[dict], name: str) -> list:
     return [f[name] for f in window if name in f]
@@ -851,7 +855,7 @@ def main() -> None:
                         help="Serial ports for UWB devices")
     parser.add_argument("--window", type=int, default=5,
                         help="Window size (matches training)")
-    parser.add_argument("--idle-threshold", type=float, default=0.2,
+    parser.add_argument("--idle-threshold", type=float, default=0.4,
                         help="Movement score below this = idle")
     parser.add_argument("--min-conf", type=float, default=0.65,
                         help="Minimum prediction confidence to accept")
