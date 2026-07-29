@@ -8,6 +8,8 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -122,6 +124,127 @@ def _find_latest_model(models_dir: str = "models", pattern: str = "best_model.pk
     return candidates[-1] if candidates else None
 
 
+GENERATE_OPTIONS = {"cm", "probs", "per_class", "feature_importance", "tsne", "pca"}
+
+
+def _parse_generate(value: str | list[str] | None) -> set[str]:
+    if not value:
+        return GENERATE_OPTIONS
+    if isinstance(value, str):
+        value = [value]
+    value = set(value)
+    if "all" in value:
+        return GENERATE_OPTIONS
+    return value & GENERATE_OPTIONS
+
+
+def _plot_per_class_metrics(y_true, y_pred, label_set, out_dir):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    precisions = precision_score(y_true, y_pred, average=None, zero_division=0)
+    recalls = recall_score(y_true, y_pred, average=None, zero_division=0)
+    f1s = f1_score(y_true, y_pred, average=None, zero_division=0)
+
+    x = np.arange(len(label_set))
+    w = 0.25
+    fig, ax = plt.subplots(figsize=(max(8, len(label_set) * 0.5), 5))
+    ax.bar(x - w, precisions, w, label="Precision")
+    ax.bar(x, recalls, w, label="Recall")
+    ax.bar(x + w, f1s, w, label="F1-Score")
+    ax.set_xticks(x)
+    ax.set_xticklabels(label_set, rotation=45, ha="right")
+    ax.set_ylabel("Score")
+    ax.set_title("Per-Class Precision, Recall, F1-Score")
+    ax.legend()
+    fig.tight_layout()
+    path = out_dir / "per_class_metrics.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+
+def _plot_feature_importance(pipeline, feature_names, out_dir):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    clf = pipeline.named_steps.get("clf", pipeline)
+    if not hasattr(clf, "feature_importances_"):
+        print("  Skipping feature importance: model has no feature_importances_")
+        return
+    importances = clf.feature_importances_
+    if feature_names is None or len(feature_names) != len(importances):
+        feature_names = [f"feat_{i}" for i in range(len(importances))]
+    top_k = min(20, len(importances))
+    idx = np.argsort(importances)[-top_k:]
+    fig, ax = plt.subplots(figsize=(8, max(4, top_k * 0.35)))
+    ax.barh(range(top_k), importances[idx])
+    ax.set_yticks(range(top_k))
+    ax.set_yticklabels([feature_names[i] for i in idx])
+    ax.set_xlabel("Importance")
+    ax.set_title("Top Feature Importances")
+    fig.tight_layout()
+    path = out_dir / "feature_importance.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+
+def _plot_tsne(X, y, label_set, out_dir):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    n = min(2000, len(X))
+    X_sub = X[:n]
+    y_sub = y[:n]
+    perplexity = min(30, max(5, n // 5))
+    print(f"  Running t-SNE (perplexity={perplexity}, n={n})...")
+    tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42, init="random")
+    embed = tsne.fit_transform(X_sub)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(label_set)))
+    for i, label in enumerate(label_set):
+        mask = y_sub == i
+        if mask.any():
+            ax.scatter(embed[mask, 0], embed[mask, 1], c=[colors[i]], label=label, s=10, alpha=0.7)
+    ax.legend(fontsize=6, loc="best")
+    ax.set_title("t-SNE Embedding of Test Features")
+    fig.tight_layout()
+    path = out_dir / "tsne.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+
+def _plot_pca(X, y, label_set, out_dir):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    print("  Running PCA...")
+    pca = PCA(n_components=2, random_state=42)
+    embed = pca.fit_transform(X)
+    var_explained = pca.explained_variance_ratio_
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(label_set)))
+    for i, label in enumerate(label_set):
+        mask = y == i
+        if mask.any():
+            ax.scatter(embed[mask, 0], embed[mask, 1], c=[colors[i]], label=label, s=10, alpha=0.7)
+    ax.legend(fontsize=6, loc="best")
+    ax.set_xlabel(f"PC1 ({var_explained[0]:.1%} variance)")
+    ax.set_ylabel(f"PC2 ({var_explained[1]:.1%} variance)")
+    ax.set_title("PCA of Test Features")
+    fig.tight_layout()
+    path = out_dir / "pca.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate trained gesture model on session data")
     parser.add_argument("--model", default=None,
@@ -134,6 +257,9 @@ def main() -> None:
                         help="Window stride (used only when loading raw data)")
     parser.add_argument("--output", default=None,
                         help="Output directory (default: results/evaluate_{features_timestamp})")
+    parser.add_argument("--generate", nargs="+", default=["all"],
+                        choices=sorted(GENERATE_OPTIONS | {"all"}),
+                        help="Graphs to generate (default: all)")
     args = parser.parse_args()
 
     model_path = Path(args.model) if args.model else _find_latest_model()
@@ -151,10 +277,12 @@ def main() -> None:
         pipeline = raw["pipeline"]
         gestures = raw.get("gestures", [])
         label_map = raw.get("label_map", {})
+        feature_names = raw.get("feature_names", [])
     else:
         pipeline = raw
         gestures = []
         label_map = {}
+        feature_names = []
     int_to_label = {v: k for k, v in label_map.items()}
 
     input_path = Path(args.input) if args.input else None
@@ -165,6 +293,7 @@ def main() -> None:
         data = np.load(input_path, allow_pickle=True)
         X_test = data["X_test"]
         y_test = data["y_test"]
+        feature_names = data["feature_names"].tolist() if "feature_names" in data else []
         if not gestures:
             gestures = data["gestures"].tolist() if "gestures" in data else []
         if not label_map:
@@ -181,7 +310,7 @@ def main() -> None:
         for trial_frames in trials.values():
             all_frames.extend(trial_frames)
         print(f"  Loaded {len(all_frames)} frames across {len(trials)} trials")
-        X_test, y_str, _ = extract_window_features(
+        X_test, y_str, feature_names = extract_window_features(
             all_frames, window_size=args.window, stride=args.stride,
         )
         # Map string labels to ints using the model's label_map
@@ -237,6 +366,9 @@ def main() -> None:
         present = set(label_set)
         label_set = [g for g in ordered_gestures if g in present] + [g for g in label_set if g not in ordered_gestures]
 
+    generate_set = _parse_generate(args.generate)
+    print(f"Generating graphs: {', '.join(sorted(generate_set))}")
+
     acc = accuracy_score(y_true, y_pred)
     precision = precision_score(y_true, y_pred, average="weighted", zero_division=0)
     recall = recall_score(y_true, y_pred, average="weighted", zero_division=0)
@@ -279,38 +411,42 @@ def main() -> None:
     except ImportError:
         has_sns = False
 
-    n = len(label_set)
-    plt.figure(figsize=(max(8, n * 0.8), max(6, n * 0.7)))
-    if has_sns:
-        ax = sns.heatmap(cm_norm, annot=True, fmt=".1f", cmap="Blues",
-                         xticklabels=label_set, yticklabels=label_set,
-                         annot_kws={"fontsize": max(6, min(14, 14 - n * 0.3))})
-        ax.set_xlabel("Predicted Gesture (%)")
-        ax.set_ylabel("Actual Gesture (%)")
-    else:
-        plt.imshow(cm_norm, interpolation="nearest", cmap=plt.cm.Blues)
-        plt.colorbar()
-        tick_marks = np.arange(n)
-        plt.xticks(tick_marks, label_set, rotation=45, fontsize=max(6, min(12, 12 - n * 0.25)))
-        plt.yticks(tick_marks, label_set, fontsize=max(6, min(12, 12 - n * 0.25)))
-        thresh = cm_norm.max() / 2.0
-        for i in range(n):
-            for j in range(n):
-                plt.text(j, i, f"{cm_norm[i, j]:.1f}",
-                         ha="center", va="center",
-                         fontsize=max(6, min(12, 12 - n * 0.25)),
-                         color="white" if cm_norm[i, j] > thresh else "black")
-        plt.xlabel("Predicted Gesture (%)")
-        plt.ylabel("Actual Gesture (%)")
-    _model_title = _pretty_name(model_path.parent.name) if model_path.parent.name in _PRETTY_NAMES else ""
-    if _model_title:
-        plt.suptitle(_model_title, fontsize=14)
-    plt.tight_layout()
-    cm_path = out_dir / "confusion_matrix.png"
-    plt.savefig(cm_path, dpi=150)
-    print(f"\nSaved: {cm_path}")
+    print()
 
-    if y_prob is not None:
+    if "cm" in generate_set:
+        n = len(label_set)
+        fig = plt.figure(figsize=(max(8, n * 0.8), max(6, n * 0.7)))
+        if has_sns:
+            ax = sns.heatmap(cm_norm, annot=True, fmt=".1f", cmap="Blues",
+                             xticklabels=label_set, yticklabels=label_set,
+                             annot_kws={"fontsize": max(6, min(14, 14 - n * 0.3))})
+            ax.set_xlabel("Predicted Gesture (%)")
+            ax.set_ylabel("Actual Gesture (%)")
+        else:
+            plt.imshow(cm_norm, interpolation="nearest", cmap=plt.cm.Blues)
+            plt.colorbar()
+            tick_marks = np.arange(n)
+            plt.xticks(tick_marks, label_set, rotation=45, fontsize=max(6, min(12, 12 - n * 0.25)))
+            plt.yticks(tick_marks, label_set, fontsize=max(6, min(12, 12 - n * 0.25)))
+            thresh = cm_norm.max() / 2.0
+            for i in range(n):
+                for j in range(n):
+                    plt.text(j, i, f"{cm_norm[i, j]:.1f}",
+                             ha="center", va="center",
+                             fontsize=max(6, min(12, 12 - n * 0.25)),
+                             color="white" if cm_norm[i, j] > thresh else "black")
+            plt.xlabel("Predicted Gesture (%)")
+            plt.ylabel("Actual Gesture (%)")
+        _model_title = _pretty_name(model_path.parent.name) if model_path.parent.name in _PRETTY_NAMES else ""
+        if _model_title:
+            plt.suptitle(_model_title, fontsize=14)
+        plt.tight_layout()
+        cm_path = out_dir / "confusion_matrix.png"
+        plt.savefig(cm_path, dpi=150)
+        plt.close(fig)
+        print(f"  Saved: {cm_path}")
+
+    if "probs" in generate_set and y_prob is not None:
         plt.figure(figsize=(10, 6))
         n_classes = y_prob.shape[1]
         for i in range(min(n_classes, min(4, n_classes))):
@@ -323,7 +459,20 @@ def main() -> None:
         plt.tight_layout()
         prob_path = out_dir / "prediction_probabilities.png"
         plt.savefig(prob_path, dpi=150)
-        print(f"Saved: {prob_path}")
+        plt.close()
+        print(f"  Saved: {prob_path}")
+
+    if "per_class" in generate_set:
+        _plot_per_class_metrics(y_true, y_pred, label_set, out_dir)
+
+    if "feature_importance" in generate_set:
+        _plot_feature_importance(pipeline, feature_names, out_dir)
+
+    if "tsne" in generate_set:
+        _plot_tsne(X_test, y_true, label_set, out_dir)
+
+    if "pca" in generate_set:
+        _plot_pca(X_test, y_true, label_set, out_dir)
 
     results = {
         "model": str(model_path),
