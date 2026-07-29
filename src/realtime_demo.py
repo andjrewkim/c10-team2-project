@@ -90,28 +90,24 @@ def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]
 
 
 def _movement_score(readings: list, sensor_type: str) -> float:
-    """Movement score blending accel deltas + gyro magnitude.
+    """Movement score based on accel frame-to-frame deltas (accel-only).
 
-    Pure accel misses small rotational gestures like soli (finger rub).
-    The gyro component catches rotational movement that the wrist-mounted
-    IMU picks up even when the hand stays mostly still in space.
+    Gyro is intentionally excluded — even holding still, the wrist IMU
+    picks up tiny rotational jitter (tremor, sensor noise) that would make
+    the system never reach idle.  Subtle rotational gestures like soli are
+    instead caught by _check_gyro_oscillation() which checks for the
+    specific oscillatory pattern of finger rub.
     """
     if sensor_type == "imu":
         if len(readings) < 2:
             return 0.0
-        accel_deltas: list[float] = []
-        gyro_mags: list[float] = []
+        accel_deltas = []
         for i in range(1, len(readings)):
-            a0 = readings[i-1].data.get("accel", [0, 0, 0])
-            a1 = readings[i].data.get("accel", [0, 0, 0])
-            d = abs(a1[0] - a0[0]) + abs(a1[1] - a0[1]) + abs(a1[2] - a0[2])
+            a0 = readings[i-1].data.get("accel", [0,0,0])
+            a1 = readings[i].data.get("accel", [0,0,0])
+            d = abs(a1[0]-a0[0]) + abs(a1[1]-a0[1]) + abs(a1[2]-a0[2])
             accel_deltas.append(d)
-            g = readings[i].data.get("gyro", [0, 0, 0])
-            gyro_mags.append(abs(g[0]) + abs(g[1]) + abs(g[2]))
-        accel_score = float(np.mean(accel_deltas)) if accel_deltas else 0.0
-        gyro_score = float(np.mean(gyro_mags)) if gyro_mags else 0.0
-        # Blend: accel catches gross motion, gyro catches subtle rotation
-        return accel_score + gyro_score * 0.3
+        return float(np.mean(accel_deltas)) if accel_deltas else 0.0
     elif sensor_type == "mmwave":
         cents = []
         for r in readings:
@@ -127,6 +123,39 @@ def _movement_score(readings: list, sensor_type: str) -> float:
         return float(dist)
     return 0.0
 
+
+def _check_gyro_oscillation(readings: list) -> bool:
+    """Detect subtle oscillatory gestures (soli finger rub) that accel-only
+    idle detection would miss.
+
+    Applies the same gyro gain + deadband as the feature pipeline so that
+    the override is consistent with what the model actually sees.
+
+    Returns True if any gyro channel shows both:
+      - Non-trivial amplitude (RMS > 0.3 dps after deadband)
+      - High zero-crossing rate (> 0.20) — oscillatory, not a step/transient
+    """
+    if len(readings) < 4:
+        return False
+    gyros = []
+    for r in readings:
+        g = r.data.get("gyro", [0, 0, 0])
+        gx = g[0] * _gyro_gain if abs(g[0] * _gyro_gain) >= _gyro_deadband else 0.0
+        gy = g[1] * _gyro_gain if abs(g[1] * _gyro_gain) >= _gyro_deadband else 0.0
+        gz = g[2] * _gyro_gain if abs(g[2] * _gyro_gain) >= _gyro_deadband else 0.0
+        gyros.append([gx, gy, gz])
+    gyro_data = np.array(gyros)
+    for c in range(3):
+        col = gyro_data[:, c]
+        rms = float(np.sqrt(np.mean(col ** 2)))
+        if rms < 0.3:
+            continue
+        centered = col - np.mean(col)
+        crossings = int(np.sum((centered[:-1] * centered[1:]) < 0))
+        zcr = crossings / len(col) if len(col) > 0 else 0.0
+        if zcr > 0.20:
+            return True
+    return False
 
 def _gather_readings(window: list[dict], name: str) -> list:
     return [f[name] for f in window if name in f]
@@ -264,6 +293,14 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
             movement = np.mean(movement_history)
 
             is_idle = movement < args.idle_threshold
+
+            # ── gyro oscillation override ──────────────────────────────
+            # Soli (finger rub) produces minimal wrist accel but distinctive
+            # oscillatory gyro.  Override idle so the model gets to classify it.
+            if is_idle:
+                imu_readings = _gather_readings(window, "imu")
+                if imu_readings and _check_gyro_oscillation(imu_readings):
+                    is_idle = False
 
             # ── boxing observation: count punches, determine type ──
             if observe_until is not None and current_accel is not None and prev_accel is not None:
@@ -622,6 +659,15 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                 last_movement = movement
 
                 is_idle = movement < args.idle_threshold
+
+                # ── gyro oscillation override ────────────────────────
+                # Soli (finger rub) produces minimal wrist accel but
+                # distinctive oscillatory gyro. Override idle so the model
+                # gets to classify it.
+                if is_idle:
+                    imu_readings = _gather_readings(window, "imu")
+                    if imu_readings and _check_gyro_oscillation(imu_readings):
+                        is_idle = False
 
                 # ── idle / active tracking ───────────────────────────
                 if is_idle:
