@@ -1,0 +1,10 @@
+{
+  "label_to_int": {
+    "making-fist-open": 0,
+    "soli": 1
+  },
+  "int_to_label": {
+    "0": "making-fist-open",
+    "1": "soli"
+  }
+}

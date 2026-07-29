@@ -76,10 +76,16 @@ def _load_frames(input_path: Path) -> dict[str, list[dict]]:
     raise ValueError(f"Unrecognized input: {input_path}")
 
 
+def _find_latest_model(models_dir: str = "models", pattern: str = "best_model.pkl") -> Path | None:
+    models_path = Path(models_dir)
+    candidates = sorted(models_path.glob(f"train_*/{pattern}"))
+    return candidates[-1] if candidates else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate trained gesture model on session data")
-    parser.add_argument("--model", default="models/best_model.pkl",
-                        help="Path to trained model pickle")
+    parser.add_argument("--model", default=None,
+                        help="Path to trained model pickle (default: latest train_*/best_model.pkl)")
     parser.add_argument("--input", default="data/raw",
                         help="Session folder, combined CSV, or combined JSON")
     parser.add_argument("--window", type=int, default=10,
@@ -90,7 +96,10 @@ def main() -> None:
                         help="Output directory for evaluation results")
     args = parser.parse_args()
 
-    model_path = Path(args.model)
+    model_path = Path(args.model) if args.model else _find_latest_model()
+    if model_path is None:
+        print("Error: no model specified and no train_*/best_model.pkl found in models/")
+        return
     if not model_path.exists():
         print(f"Error: model not found: {model_path}")
         return

@@ -98,11 +98,11 @@ def main() -> None:
                 cx, cy, cz = np.mean(xs), np.mean(ys), np.mean(zs)
                 mv = np.mean(np.abs(vs))
 
-                np.roll(cx_hist, -1); cx_hist[-1] = cx
-                np.roll(cy_hist, -1); cy_hist[-1] = cy
-                np.roll(cz_hist, -1); cz_hist[-1] = cz
-                np.roll(vel_hist, -1); vel_hist[-1] = mv
-                np.roll(n_hist, -1); n_hist[-1] = num
+                cx_hist = np.roll(cx_hist, -1); cx_hist[-1] = cx
+                cy_hist = np.roll(cy_hist, -1); cy_hist[-1] = cy
+                cz_hist = np.roll(cz_hist, -1); cz_hist[-1] = cz
+                vel_hist = np.roll(vel_hist, -1); vel_hist[-1] = mv
+                n_hist = np.roll(n_hist, -1); n_hist[-1] = num
 
                 cx_trail.append((cx, cy))
 

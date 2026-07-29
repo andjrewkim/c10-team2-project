@@ -1,0 +1,94 @@
+{
+  "num_train": 1944,
+  "num_test": 486,
+  "num_features": 24,
+  "feature_names": [
+    "mm_mean_num_points",
+    "mm_mean_mean_x",
+    "mm_mean_std_x",
+    "mm_mean_mean_y",
+    "mm_mean_std_y",
+    "mm_mean_mean_range",
+    "mm_std_num_points",
+    "mm_std_mean_x",
+    "mm_std_std_x",
+    "mm_std_mean_y",
+    "mm_std_std_y",
+    "mm_std_mean_range",
+    "mm_path_length",
+    "imu_mean_accel_x",
+    "imu_mean_accel_y",
+    "imu_mean_accel_z",
+    "imu_mean_gyro_x",
+    "imu_mean_gyro_y",
+    "imu_mean_gyro_z",
+    "imu_std_accel_x",
+    "imu_std_accel_y",
+    "imu_std_accel_z",
+    "imu_std_gyro_x",
+    "imu_std_gyro_y",
+    "imu_std_gyro_z"
+  ],
+  "gestures": [
+    "anticlockwise",
+    "bye-bye",
+    "clapping",
+    "clockwise",
+    "left",
+    "making-fist-open",
+    "one-arm-boxing",
+    "palm-up-down",
+    "pull",
+    "push",
+    "raise-arms",
+    "right",
+    "soli",
+    "t-arm",
+    "two-arm-boxing"
+  ],
+  "label_map": {
+    "anticlockwise": 0,
+    "bye-bye": 1,
+    "clapping": 2,
+    "clockwise": 3,
+    "left": 4,
+    "making-fist-open": 5,
+    "one-arm-boxing": 6,
+    "palm-up-down": 7,
+    "pull": 8,
+    "push": 9,
+    "raise-arms": 10,
+    "right": 11,
+    "soli": 12,
+    "t-arm": 13,
+    "two-arm-boxing": 14
+  },
+  "results": {
+    "random_forest": {
+      "train_accuracy": 0.3029835390946502,
+      "test_accuracy": 0.25102880658436216,
+      "train_time_s": 0.397,
+      "params": "{'bootstrap': True, 'ccp_alpha': 0.0, 'class_weight': None, 'criterion': 'gini', 'max_depth': 10, 'max_features': 'sqrt', 'max_leaf_nodes': None, 'max_samples': None, 'min_impurity_decrease': 0.0, 'min_samples_leaf': 1, 'min_samples_split': 2, 'min_weight_fraction_leaf': 0.0, 'monotonic_cst': None, 'n_estimators': 100, 'n_jobs': -1, 'oob_score': False, 'random_state': 42, 'verbose': 0, 'warm_start': False}"
+    },
+    "knn": {
+      "train_accuracy": 0.15895061728395063,
+      "test_accuracy": 0.13991769547325103,
+      "train_time_s": 0.004,
+      "params": "{'algorithm': 'auto', 'leaf_size': 30, 'metric': 'minkowski', 'metric_params': None, 'n_jobs': -1, 'n_neighbors': 5, 'p': 2, 'weights': 'uniform'}"
+    },
+    "svm_rbf": {
+      "train_accuracy": 0.2664609053497942,
+      "test_accuracy": 0.23868312757201646,
+      "train_time_s": 1.365,
+      "params": "{'C': 1.0, 'break_ties': False, 'cache_size': 200, 'class_weight': None, 'coef0': 0.0, 'decision_function_shape': 'ovr', 'degree': 3, 'gamma': 'scale', 'kernel': 'rbf', 'max_iter': -1, 'probability': True, 'random_state': 42, 'shrinking': True, 'tol': 0.001, 'verbose': False}"
+    },
+    "svm_linear": {
+      "train_accuracy": 0.2551440329218107,
+      "test_accuracy": 0.24074074074074073,
+      "train_time_s": 0.993,
+      "params": "{'C': 1.0, 'break_ties': False, 'cache_size': 200, 'class_weight': None, 'coef0': 0.0, 'decision_function_shape': 'ovr', 'degree': 3, 'gamma': 'scale', 'kernel': 'linear', 'max_iter': -1, 'probability': True, 'random_state': 42, 'shrinking': True, 'tol': 0.001, 'verbose': False}"
+    }
+  },
+  "best_model": "random_forest",
+  "best_score": 0.25102880658436216
+}

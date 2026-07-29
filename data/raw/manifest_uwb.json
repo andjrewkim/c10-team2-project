@@ -1,0 +1,48 @@
+{
+  "gestures": [
+    "none",
+    "clapping",
+    "two-arm-boxing"
+  ],
+  "trials_per_gesture": 10,
+  "duration_s": 5.0,
+  "sensors": [
+    "uwb"
+  ],
+  "anchor_port": "/dev/cu.usbmodemFDADDB2EC1651",
+  "left_tag_port": "/dev/cu.usbmodemE89A5C6EB9A71",
+  "right_tag_port": "/dev/cu.usbmodemD46FFE3655DD1",
+  "files": [
+    "none_t000_20260727_231119.jsonl",
+    "none_t001_20260727_231124.jsonl",
+    "none_t002_20260727_231129.jsonl",
+    "none_t003_20260727_231134.jsonl",
+    "none_t004_20260727_231140.jsonl",
+    "none_t005_20260727_231145.jsonl",
+    "none_t006_20260727_231150.jsonl",
+    "none_t007_20260727_231155.jsonl",
+    "none_t008_20260727_231200.jsonl",
+    "none_t009_20260727_231205.jsonl",
+    "clapping_t000_20260727_231210.jsonl",
+    "clapping_t001_20260727_231223.jsonl",
+    "clapping_t002_20260727_231228.jsonl",
+    "clapping_t003_20260727_231233.jsonl",
+    "clapping_t004_20260727_231238.jsonl",
+    "clapping_t005_20260727_231243.jsonl",
+    "clapping_t006_20260727_231248.jsonl",
+    "clapping_t007_20260727_231253.jsonl",
+    "clapping_t008_20260727_231258.jsonl",
+    "clapping_t009_20260727_231303.jsonl",
+    "two-arm-boxing_t000_20260727_231308.jsonl",
+    "two-arm-boxing_t001_20260727_231313.jsonl",
+    "two-arm-boxing_t002_20260727_231318.jsonl",
+    "two-arm-boxing_t003_20260727_231323.jsonl",
+    "two-arm-boxing_t004_20260727_231328.jsonl",
+    "two-arm-boxing_t005_20260727_231333.jsonl",
+    "two-arm-boxing_t006_20260727_231338.jsonl",
+    "two-arm-boxing_t007_20260727_231343.jsonl",
+    "two-arm-boxing_t008_20260727_231348.jsonl",
+    "two-arm-boxing_t009_20260727_231353.jsonl"
+  ],
+  "total_files": 30
+}
