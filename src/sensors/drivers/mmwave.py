@@ -173,7 +173,7 @@ class MmWaveRadarSensor(BaseSensor):
                 self._port.reset_input_buffer()
                 write_cli_command(self._port, "sensorStart 0 0 0 0")
 
-            self._bg_subtractor = ExponentialBackgroundSubtractor(alpha=0.02, init_frames=5)
+            self._bg_subtractor = ExponentialBackgroundSubtractor(alpha=0.1, init_frames=20)
             self._frame_count = 0
             self._reconnect_delay = 0.5
             self._running = True
@@ -306,14 +306,33 @@ class MmWaveRadarSensor(BaseSensor):
         rp = range_profile_from_tlvs(tlvs)
         if rp is not None and self._bg_subtractor is not None:
             range_data = rp.tolist()
+            # Capture background BEFORE update — the residual is computed
+            # against the pre-update background, so normalize by that same
+            # baseline for consistency.
+            bg_before = self._bg_subtractor.background
             mp = self._bg_subtractor.update(rp)
-            motion_score = float(np.mean(np.abs(mp)))
+            raw_score = float(np.mean(np.abs(mp)))
+            # Normalize by background magnitude so motion represents *relative* change.
+            # Raw range-profile magnitudes are large (thousands); even 1% sensor noise
+            # produces huge absolute residuals.  Dividing by the mean background
+            # converts to a stable 0-1+ scale where ~0 = nothing moving.
+            if bg_before is not None:
+                bg_mean = float(np.mean(np.abs(bg_before)))
+                motion_score = raw_score / bg_mean if bg_mean > 1e-6 else 0.0
+            else:
+                motion_score = raw_score
         elif n > 0 and self._bg_subtractor is not None:
             ranges = np.sqrt(cloud.x**2 + cloud.y**2)
             if len(ranges):
                 try:
+                    bg_before = self._bg_subtractor.background
                     mp = self._bg_subtractor.update(ranges)
-                    motion_score = float(np.mean(np.abs(mp)))
+                    raw_score = float(np.mean(np.abs(mp)))
+                    if bg_before is not None:
+                        bg_mean = float(np.mean(np.abs(bg_before)))
+                        motion_score = raw_score / bg_mean if bg_mean > 1e-6 else 0.0
+                    else:
+                        motion_score = raw_score
                 except ValueError:
                     pass
 

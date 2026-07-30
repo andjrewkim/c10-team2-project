@@ -3,10 +3,20 @@ from __future__ import annotations
 import argparse
 import pickle
 import time
+import warnings
 from collections import deque
 from pathlib import Path
 
 import numpy as np
+
+# Suppress sklearn parallel warning that floods the console at ~40 Hz during
+# real-time prediction.  The warning is harmless — it just means the model
+# was trained/dumped with a different sklearn version than the runtime.
+warnings.filterwarnings(
+    "ignore",
+    message=".*sklearn\.utils\.parallel\.delayed.*",
+    category=UserWarning,
+)
 
 from src.sensors.imu_reader import ImuReader
 from src.sensors.mmWave.mmwave_reader import MmWaveReader
