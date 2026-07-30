@@ -31,6 +31,10 @@ _accel_gain: float = 1.0
 # Whether to compute FFT spectral + correlation features (v3+ models)
 _use_extra_features: bool = False
 
+# High-pass filter state for gravity removal from accelerometer
+# Tracks the slowly-changing gravity vector so we can isolate true linear acceleration
+_accel_lp: np.ndarray | None = None  # [ax, ay, az] low-pass filtered (gravity estimate)
+
 
 def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]:
     if sensor_type == "mmwave":
@@ -91,25 +95,57 @@ def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]
     return []
 
 
-def _movement_score(readings: list, sensor_type: str) -> float:
-    """Movement score based on accel frame-to-frame deltas (accel-only).
+def _compute_linear_accel(raw_accel: list[float], alpha: float = 0.92) -> list[float]:
+    """Remove gravity from raw accelerometer using a single-pole high-pass filter.
 
-    Gyro is intentionally excluded — even holding still, the wrist IMU
-    picks up tiny rotational jitter (tremor, sensor noise) that would make
-    the system never reach idle.  Subtle rotational gestures like soli are
-    instead caught by _check_gyro_oscillation() which checks for the
-    specific oscillatory pattern of finger rub.
+    The low-pass filter tracks the gravity vector, which changes slowly as the
+    wrist rotates. Subtracting it from raw accel isolates true linear acceleration
+    (actual movement), solving the false-positive problem where wrist rotation
+    masquerades as linear motion through gravity projection.
+
+    alpha: smoothing factor. 0.92 ≈ 0.25s time constant at 50 Hz (cutoff ~0.64 Hz).
+           Higher = suppresses slow rotation better but adapts slower.
+           Lower = adapts faster but lets more slow rotation through.
+    """
+    global _accel_lp
+    raw = np.array(raw_accel, dtype=float)
+    if _accel_lp is None:
+        _accel_lp = raw.copy()
+    else:
+        # Low-pass: slowly track gravity
+        _accel_lp = alpha * _accel_lp + (1 - alpha) * raw
+    # Linear accel = raw - gravity estimate  (residual = true linear acceleration)
+    linear = raw - _accel_lp
+    return linear.tolist()
+
+
+def _movement_score(readings: list, sensor_type: str) -> float:
+    """Movement score based on linear acceleration (gravity removed via HPF).
+
+    Uses a single-pole high-pass filter on the accelerometer to track and
+    subtract the gravity vector. This ensures that wrist rotation (which changes
+    how gravity projects onto sensor axes) produces minimal movement signal.
+    Only true linear acceleration contributes to the score.
+
+    Rotational gestures (soli, making-fist-open, t-arm, bye-bye) are caught
+    by _check_gyro_oscillation() which detects their distinctive gyro patterns
+    and overrides idle even when linear acceleration is low.
     """
     if sensor_type == "imu":
         if len(readings) < 2:
             return 0.0
-        accel_deltas = []
-        for i in range(1, len(readings)):
-            a0 = readings[i-1].data.get("accel", [0,0,0])
-            a1 = readings[i].data.get("accel", [0,0,0])
-            d = abs(a1[0]-a0[0]) + abs(a1[1]-a0[1]) + abs(a1[2]-a0[2])
-            accel_deltas.append(d)
-        return float(np.mean(accel_deltas)) if accel_deltas else 0.0
+        # Compute linear (gravity-free) acceleration for each reading
+        linear_accels = []
+        for r in readings:
+            raw = r.data.get("accel", [0, 0, 0])
+            linear = _compute_linear_accel(raw)
+            linear_accels.append(linear)
+        # Movement score from linear accel deltas (transients only)
+        deltas = []
+        for i in range(1, len(linear_accels)):
+            d = sum(abs(linear_accels[i][j] - linear_accels[i-1][j]) for j in range(3))
+            deltas.append(d)
+        return float(np.mean(deltas)) if deltas else 0.0
     elif sensor_type == "mmwave":
         cents = []
         for r in readings:
@@ -127,8 +163,13 @@ def _movement_score(readings: list, sensor_type: str) -> float:
 
 
 def _check_gyro_oscillation(readings: list) -> bool:
-    """Detect subtle oscillatory gestures (soli finger rub) that accel-only
-    idle detection would miss.
+    """Detect oscillatory gestures (soli finger rub) via gyro signature.
+
+    The HPF-based movement score removes gravity projection, which suppresses
+    false push/pull triggers from wrist rotation. But rotational gestures
+    (soli, making-fist-open, t-arm, bye-bye) also show low linear accel.
+    This function detects their distinctive gyro oscillation and overrides
+    idle so the model can classify them.
 
     Applies the same gyro gain + deadband as the feature pipeline so that
     the override is consistent with what the model actually sees.
@@ -294,7 +335,13 @@ def _check_feature_dims(n_computed: int, n_expected: int, sensor_names: list[str
     )
 
 
-def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sensor_types):
+def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sensor_types,
+                 gesture_conf_overrides: dict[str, float] | None = None,
+                 gesture_movement_overrides: dict[str, float] | None = None):
+    if gesture_conf_overrides is None:
+        gesture_conf_overrides = {}
+    if gesture_movement_overrides is None:
+        gesture_movement_overrides = {}
     frame_buffer = deque(maxlen=args.window)
     smooth_buffer: deque[str] = deque(maxlen=args.smooth)
     frame_count = 0
@@ -312,6 +359,10 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     prev_accel: list[float] | None = None
     was_in_punch = False
     punch_cooldown = 0
+
+    # Reset gravity-tracking HPF for a fresh session
+    global _accel_lp
+    _accel_lp = None
 
     print("\n=== Real-time Demo Started ===")
     print("Waiting for gestures...\n")
@@ -412,6 +463,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                         print("  -> idle")
                         displayed = None
                         smooth_buffer.clear()
+                        movement_history.clear()
                         challenge_count = 0
                         challenge_label = None
                 else:
@@ -420,16 +472,31 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                     challenge_label = None
                 continue
 
-            hold_counter = max_hold_frames
-
+            # hold_counter is set to max_hold_frames when a new gesture is displayed
+            # (in the challenge acceptance section below). Do NOT reset it here — that
+            # would make displayed gestures stick forever while movement stays active.
+            
             try:
                 label, conf = _predict(pipeline, gestures, features)
             except Exception as e:
                 print(f"  ⚠ Prediction error: {e}")
                 time.sleep(0.02)
                 continue
-            if conf < args.min_conf:
+
+            # ── per-gesture confidence threshold ──────────────────
+            min_conf = gesture_conf_overrides.get(label, args.min_conf)
+            if conf < min_conf:
+                if args.debug:
+                    print(f"  [filter] {label} conf={conf:.3f} < {min_conf:.3f}")
                 continue
+
+            # ── per-gesture minimum movement ──────────────────────
+            min_movement = gesture_movement_overrides.get(label, 0.0)
+            if movement < min_movement:
+                if args.debug:
+                    print(f"  [filter] {label} movement={movement:.3f} < {min_movement:.3f}")
+                continue
+
             smooth_buffer.append(label)
 
             if len(smooth_buffer) >= args.min_vote:
@@ -485,13 +552,23 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     print(f"Frames: {frame_count}")
 
 
-def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_types):
+def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_types,
+             gesture_conf_overrides: dict[str, float] | None = None,
+             gesture_movement_overrides: dict[str, float] | None = None):
+    if gesture_conf_overrides is None:
+        gesture_conf_overrides = {}
+    if gesture_movement_overrides is None:
+        gesture_movement_overrides = {}
     """Clean realtime GUI — resizable, fullscreen, no-nonsense."""
     try:
         import tkinter as tk
     except ImportError:
         print("--gui requires tkinter (install python-tk)")
         return
+
+    # ── Reset gravity-tracking HPF for a fresh session ─────
+    global _accel_lp
+    _accel_lp = None
 
     # ── state variables ──────────────────────────────────────────────
     frame_buffer = deque(maxlen=args.window)
@@ -814,6 +891,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             gesture_label.config(text="—", fg="#ffffff")
                             displayed = None
                             smooth_buffer.clear()
+                            movement_history.clear()
                             challenge_count = 0
                             challenge_label = None
                             error_label.config(text="")
@@ -824,8 +902,10 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     root.after(25, poll)
                     return
 
-                hold_counter = max_hold_frames
-
+                # hold_counter is set to max_hold_frames when a new gesture is
+                # displayed (in the GUI update section below). Do NOT reset it
+                # here — that would make displayed gestures stick forever.
+                
                 # ── predict ──────────────────────────────────────────
                 try:
                     label, conf = _predict(pipeline, gestures, features)
@@ -834,7 +914,12 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     root.after(30, poll)
                     return
 
-                if conf >= args.min_conf:
+                # ── per-gesture confidence threshold ─────────────────
+                min_conf = gesture_conf_overrides.get(label, args.min_conf)
+                # ── per-gesture minimum movement ───────────────────
+                min_movement = gesture_movement_overrides.get(label, 0.0)
+
+                if conf >= min_conf and movement >= min_movement:
                     smooth_buffer.append(label)
 
                 if len(smooth_buffer) >= args.min_vote:
@@ -924,8 +1009,8 @@ def main() -> None:
                         help="Serial ports for UWB devices")
     parser.add_argument("--window", type=int, default=5,
                         help="Window size (matches training)")
-    parser.add_argument("--idle-threshold", type=float, default=0.45,
-                        help="Movement score below this = idle (default: 0.45)")
+    parser.add_argument("--idle-threshold", type=float, default=0.25,
+                        help="Movement score (linear accel from HPF) below this = idle (default: 0.45)")
     parser.add_argument("--min-conf", type=float, default=0.68,
                         help="Minimum prediction confidence to accept (default: 0.68)")
     parser.add_argument("--smooth", type=int, default=10,
@@ -950,6 +1035,12 @@ def main() -> None:
                         help="Scale factor for gyro values before model (default: 0.6)")
     parser.add_argument("--gyro-deadband", type=float, default=2.0,
                         help="Gyro deadband in dps — values below this are zeroed out (default: 2.0)")
+    parser.add_argument("--gesture-conf", nargs="+", default=[],
+                        help="Per-gesture confidence thresholds: gesture=threshold (e.g. push=0.85 soli=0.9). "
+                             "Overrides --min-conf for specific gestures.")
+    parser.add_argument("--gesture-min-movement", nargs="+", default=[],
+                        help="Per-gesture minimum movement: gesture=threshold (e.g. push=0.15 soli=0.2). "
+                             "Require more movement for specific gestures to be accepted.")
     parser.add_argument("--debug", action="store_true",
                         help="Print per-frame predictions")
     parser.add_argument("--imu-port", default=None,
@@ -957,6 +1048,32 @@ def main() -> None:
     parser.add_argument("--imu-baud", type=int, default=115200,
                         help="IMU serial baud rate")
     args = parser.parse_args()
+
+    # ── Parse per-gesture overrides ─────────────────────────────────
+    gesture_conf_overrides: dict[str, float] = {}
+    for item in args.gesture_conf:
+        if "=" in item:
+            gesture, threshold = item.split("=", 1)
+            gesture_conf_overrides[gesture.strip().lower()] = float(threshold.strip())
+        else:
+            print(f"  ⚠ Warning: ignoring malformed --gesture-conf entry '{item}' (expected gesture=threshold)")
+
+    gesture_movement_overrides: dict[str, float] = {}
+    for item in args.gesture_min_movement:
+        if "=" in item:
+            gesture, threshold = item.split("=", 1)
+            gesture_movement_overrides[gesture.strip().lower()] = float(threshold.strip())
+        else:
+            print(f"  ⚠ Warning: ignoring malformed --gesture-min-movement entry '{item}' (expected gesture=threshold)")
+
+    if gesture_conf_overrides or gesture_movement_overrides:
+        print("Per-gesture overrides:")
+        if gesture_conf_overrides:
+            items = ", ".join(f"{k}={v}" for k, v in sorted(gesture_conf_overrides.items()))
+            print(f"  Confidence: {items}")
+        if gesture_movement_overrides:
+            items = ", ".join(f"{k}={v}" for k, v in sorted(gesture_movement_overrides.items()))
+            print(f"  Min movement: {items}")
 
     model_path = Path(args.model)
     if not model_path.exists():
@@ -1059,9 +1176,11 @@ def main() -> None:
     _gyro_deadband = args.gyro_deadband
 
     if args.gui:
-        run_gui(args, pipeline, expected_n_features, gestures_list, reader_map, sensor_types)
+        run_gui(args, pipeline, expected_n_features, gestures_list, reader_map,
+                sensor_types, gesture_conf_overrides, gesture_movement_overrides)
     else:
-        run_terminal(args, pipeline, expected_n_features, gestures_list, reader_map, sensor_types)
+        run_terminal(args, pipeline, expected_n_features, gestures_list, reader_map,
+                     sensor_types, gesture_conf_overrides, gesture_movement_overrides)
 
 
 if __name__ == "__main__":
