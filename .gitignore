@@ -44,8 +44,8 @@ coverage/
 /data/raw/manifest.json
 
 # Processed datasets (regeneratable)
-/data/processed/*.npz
-/data/processed/*.json
+# /data/processed/*.npz
+# /data/processed/*.json
 
 # Trained models (regeneratable)
 /models/*.pkl

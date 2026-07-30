@@ -1,0 +1,19 @@
+{
+  "session": "20260730_225331",
+  "gestures": [
+    "t-arm",
+    "clapping",
+    "soli"
+  ],
+  "trials_per_gesture": 15,
+  "duration_s": 2.0,
+  "fps": 10,
+  "sensors": [
+    "imu"
+  ],
+  "mode": "serial",
+  "alternate": false,
+  "collector": "student03",
+  "total_frames": 889,
+  "num_trials": 45
+}

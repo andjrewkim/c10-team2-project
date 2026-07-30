@@ -1284,11 +1284,13 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
         root.after_idle(root.quit)
         root.after_idle(root.destroy)
         # Restore default handler and re-raise so the shell can suspend
-        signal.signal(signal.SIGTSTP, signal.SIG_DFL)
-        os.kill(os.getpid(), signal.SIGTSTP)
+        if hasattr(signal, "SIGTSTP"):
+            signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGTSTP)
 
     signal.signal(signal.SIGINT, _on_sigint)
-    signal.signal(signal.SIGTSTP, _on_sigtstp)
+    if hasattr(signal, "SIGTSTP"):
+        signal.signal(signal.SIGTSTP, _on_sigtstp)
 
     # ── start ───────────────────────────────────────────────────────
     def on_close():
