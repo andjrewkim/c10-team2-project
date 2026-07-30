@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pickle
+import signal
 import time
 from collections import deque
 from pathlib import Path
@@ -127,6 +129,9 @@ def _movement_score(readings: list, sensor_type: str) -> float:
     how gravity projects onto sensor axes) produces minimal movement signal.
     Only true linear acceleration contributes to the score.
 
+    Applies the global ``_accel_gain`` so that ``--accel-gain`` actually affects
+    when the system enters/leaves idle — not just the model's feature vector.
+
     Rotational gestures (soli, making-fist-open, t-arm, bye-bye) are caught
     by _check_gyro_oscillation() which detects their distinctive gyro patterns
     and overrides idle even when linear acceleration is low.
@@ -134,11 +139,13 @@ def _movement_score(readings: list, sensor_type: str) -> float:
     if sensor_type == "imu":
         if len(readings) < 2:
             return 0.0
-        # Compute linear (gravity-free) acceleration for each reading
+        # Apply gains so --accel-gain affects idle detection, not just model features
         linear_accels = []
         for r in readings:
             raw = r.data.get("accel", [0, 0, 0])
-            linear = _compute_linear_accel(raw)
+            # Apply accel gain BEFORE the HPF so it affects movement score
+            raw_gained = [v * _accel_gain for v in raw]
+            linear = _compute_linear_accel(raw_gained)
             linear_accels.append(linear)
         # Movement score from linear accel deltas (transients only)
         deltas = []
@@ -349,7 +356,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     challenge_label: str | None = None
     challenge_count = 0
     hold_counter = 0
-    max_hold_frames = 8
+    max_hold_frames = 3
     movement_history: deque[float] = deque(maxlen=5)
     min_display_frames = 5
     display_age = 0
@@ -359,6 +366,8 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     prev_accel: list[float] | None = None
     was_in_punch = False
     punch_cooldown = 0
+    # Cooldown after idle clear — prevents flash of stale predictions
+    idle_cooldown = 0
 
     # Reset gravity-tracking HPF for a fresh session
     global _accel_lp
@@ -466,6 +475,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                         movement_history.clear()
                         challenge_count = 0
                         challenge_label = None
+                        idle_cooldown = 15  # suppress predictions briefly to prevent flash
                 else:
                     smooth_buffer.clear()
                     challenge_count = 0
@@ -475,7 +485,20 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
             # hold_counter is set to max_hold_frames when a new gesture is displayed
             # (in the challenge acceptance section below). Do NOT reset it here — that
             # would make displayed gestures stick forever while movement stays active.
-            
+
+            # ── idle cooldown ─────────────────────────────────────────
+            # After clearing a gesture, briefly suppress predictions to prevent
+            # a flash from transient movement noise (the buffer was just cleared,
+            # so the model sees an empty window and may produce a spurious prediction).
+            if idle_cooldown > 0:
+                idle_cooldown -= 1
+                # Cancel cooldown early if significant new movement starts
+                if movement > args.idle_threshold * 2.0:
+                    idle_cooldown = 0
+                else:
+                    time.sleep(0.02)
+                    continue
+
             try:
                 label, conf = _predict(pipeline, gestures, features)
             except Exception as e:
@@ -590,6 +613,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     prev_accel: list[float] | None = None
     was_in_punch = False
     punch_cooldown = 0
+    idle_cooldown = 0  # suppresses predictions briefly after idle clears
     active_start: float | None = None
     total_active_time = 0.0
     fps_samples: deque[float] = deque(maxlen=60)
@@ -743,7 +767,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
         nonlocal running, frame_count, displayed, challenge_label, challenge_count
         nonlocal hold_counter, movement_history, display_age, dims_warned, last_movement
         nonlocal observe_until, punch_count, prev_accel, was_in_punch, punch_cooldown
-        nonlocal active_start, total_active_time
+        nonlocal idle_cooldown, active_start, total_active_time
         nonlocal fps_samples, last_fps_time, idle_start
 
         if not running:
@@ -894,6 +918,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             movement_history.clear()
                             challenge_count = 0
                             challenge_label = None
+                            idle_cooldown = 15  # suppress predictions briefly to prevent flash
                             error_label.config(text="")
                     else:
                         smooth_buffer.clear()
@@ -905,7 +930,19 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                 # hold_counter is set to max_hold_frames when a new gesture is
                 # displayed (in the GUI update section below). Do NOT reset it
                 # here — that would make displayed gestures stick forever.
-                
+
+                # ── idle cooldown ─────────────────────────────────────
+                # After clearing a gesture, briefly suppress predictions so
+                # transient movement noise doesn't flash a stale prediction.
+                if idle_cooldown > 0:
+                    idle_cooldown -= 1
+                    # Cancel cooldown early if genuinely new movement starts
+                    if movement > args.idle_threshold * 2.0:
+                        idle_cooldown = 0
+                    else:
+                        root.after(25, poll)
+                        return
+
                 # ── predict ──────────────────────────────────────────
                 try:
                     label, conf = _predict(pipeline, gestures, features)
@@ -978,6 +1015,40 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
 
         root.after(25, poll)
 
+    # ── Signal handlers (Ctrl+C / Ctrl+Z) ────────────────────────────
+    # tkinter's C-level mainloop blocks KeyboardInterrupt, so the window
+    # stays stuck on Ctrl+C.  We register a handler that schedules
+    # root.quit() + root.destroy() on the event loop, causing mainloop()
+    # to exit cleanly so readers get stopped in the finally block.
+    #
+    # Ctrl+Z (SIGTSTP) suspends the whole process — the window freezes
+    # and becomes "not responding".  We catch it, clean up readers first,
+    # then re-raise with the default handler so the shell can suspend.
+
+    def _on_sigint(signum, frame):
+        nonlocal running
+        running = False
+        print("\n  Shutting down (Ctrl+C)...")
+        # Schedule both on the event loop so they run on the main thread
+        root.after_idle(root.quit)
+        root.after_idle(root.destroy)
+
+    def _on_sigtstp(signum, frame):
+        nonlocal running
+        running = False
+        print("\n  Suspending (Ctrl+Z) — cleaning up.")
+        for reader in reader_map.values():
+            reader.stop()
+        # Schedule window close for when the process resumes after 'fg'
+        root.after_idle(root.quit)
+        root.after_idle(root.destroy)
+        # Restore default handler and re-raise so the shell can suspend
+        signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTSTP)
+
+    signal.signal(signal.SIGINT, _on_sigint)
+    signal.signal(signal.SIGTSTP, _on_sigtstp)
+
     # ── start ───────────────────────────────────────────────────────
     def on_close():
         nonlocal running
@@ -989,8 +1060,10 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     try:
         root.mainloop()
     finally:
+        print("Stopping readers...")
         for reader in reader_map.values():
             reader.stop()
+        print("Done.")
 
 
 def main() -> None:
