@@ -96,6 +96,22 @@ def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]
     return []
 
 
+_MMWAVE_VELOCITY_THRESHOLD = 0.05  # m/s — ignore points below this; filters ghost/noise
+
+
+def _mmwave_moving_points(pts: list[dict]) -> list[dict]:
+    """Return only points with significant velocity (doppler).
+
+    The mmWave sensor often reports ghost/noise points with near-zero
+    velocity even when nothing is in the scene.  Filtering them out
+    prevents false movement scores and keeps idle detection working.
+    """
+    return [
+        p for p in pts
+        if abs(p.get("velocity", p.get("doppler", 0.0))) > _MMWAVE_VELOCITY_THRESHOLD
+    ]
+
+
 def _movement_score(readings: list, sensor_type: str) -> float:
     """Movement score based on accel frame-to-frame deltas (accel-only).
 
@@ -120,8 +136,10 @@ def _movement_score(readings: list, sensor_type: str) -> float:
         for r in readings:
             data = r.data
             pts = data.get("points", [])
-            if pts:
-                cents.append((np.mean([p.get("x",0) for p in pts]), np.mean([p.get("y",0) for p in pts])))
+            moving = _mmwave_moving_points(pts)
+            if moving:
+                cents.append((np.mean([p.get("x",0) for p in moving]),
+                              np.mean([p.get("y",0) for p in moving])))
             else:
                 cents.append((0.0, 0.0))
         dist = 0.0
@@ -239,6 +257,22 @@ def _predict(pipeline, gestures, features):
         proba = pipeline.predict_proba(X)[0]
         conf = float(max(proba))
     return label, conf
+
+
+def _compute_expected_feature_count(sensor_types: list[str], window: int) -> int:
+    """Calculate how many features the pipeline will produce for given sensors & window."""
+    total = 0
+    for stype in sensor_types:
+        if stype == "imu":
+            # 8 means + 8 stds + 8 RMS + 8 ZCR + 8×(W-1) deltas
+            total += 32 + 8 * (window - 1)
+        elif stype == "mmwave":
+            # 8 per-frame + 8 stds + 1 path_length
+            total += 8 + 8 + 1
+        elif stype == "uwb":
+            # 6 per-frame means (no std/path)
+            total += 6 + 6
+    return total
 
 
 def _check_feature_dims(n_computed: int, n_expected: int, sensor_names: list[str]) -> str | None:
@@ -946,10 +980,49 @@ def main() -> None:
             gestures_list = data["gestures"].tolist() if "gestures" in data else []
 
     expected_n_features = pipeline.n_features_in_
+
+    # ── pre-flight feature compatibility check ──────────────────────
+    computed_n = _compute_expected_feature_count(args.sensors, args.window)
+    if computed_n != expected_n_features:
+        # Check if model has extra features (spectral, correlation) that
+        # the current pipeline doesn't compute.
+        model_features = raw.get("feature_names", []) if isinstance(raw, dict) else []
+        n_extra = sum(1 for fn in model_features if "spec_" in fn or "corr_" in fn)
+        extra_hint = (
+            f"\n  It has {n_extra} spectral/correlation features that this"
+            f" demo doesn't compute. Use a model trained with the current"
+            f" feature pipeline."
+        ) if n_extra > 0 else ""
+
+        # Suggest the correct window size for IMU-only (only if model has no extra
+        # features like spectral/correlation that this pipeline doesn't compute).
+        if args.sensors == ["imu"] and n_extra == 0:
+            suggested_w = (expected_n_features - 32) // 8 + 1
+            if suggested_w >= 2:
+                print(
+                    f"Error: sensor/window mismatch.\n"
+                    f"  Model expects {expected_n_features} features, but --sensors {args.sensors}"
+                    f" with --window {args.window} produces {computed_n} features."
+                    f"\n  → Try: --window {suggested_w}"
+                )
+            else:
+                print(
+                    f"Error: sensor/window mismatch.\n"
+                    f"  Model expects {expected_n_features} features, but --sensors {args.sensors}"
+                    f" with --window {args.window} produces {computed_n} features.{extra_hint}"
+                )
+        else:
+            print(
+                f"Error: sensor/window mismatch.\n"
+                f"  Model expects {expected_n_features} features, but --sensors {args.sensors}"
+                f" with --window {args.window} produces {computed_n} features.{extra_hint}"
+            )
+        return
+
     print(f"Loaded: {model_path}")
     if gestures_list:
         print(f"Gestures: {', '.join(gestures_list)}")
-    print(f"Features expected by model: {expected_n_features}")
+    print(f"Features expected by model: {expected_n_features} (computed: {computed_n}) ✓")
     print(f"Window: {args.window}, threshold: {args.idle_threshold}")
     print()
 
