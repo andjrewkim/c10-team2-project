@@ -97,17 +97,18 @@ def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]
     return []
 
 
-def _compute_linear_accel(raw_accel: list[float], alpha: float = 0.92) -> list[float]:
+def _compute_linear_accel(raw_accel: list[float], alpha: float = 0.80) -> list[float]:
     """Remove gravity from raw accelerometer using a single-pole high-pass filter.
 
-    The low-pass filter tracks the gravity vector, which changes slowly as the
-    wrist rotates. Subtracting it from raw accel isolates true linear acceleration
+    The low-pass filter tracks the gravity vector, which changes as the wrist
+    rotates. Subtracting it from raw accel isolates true linear acceleration
     (actual movement), solving the false-positive problem where wrist rotation
     masquerades as linear motion through gravity projection.
 
-    alpha: smoothing factor. 0.92 ≈ 0.25s time constant at 50 Hz (cutoff ~0.64 Hz).
-           Higher = suppresses slow rotation better but adapts slower.
-           Lower = adapts faster but lets more slow rotation through.
+    alpha: smoothing factor. 0.80 ≈ 125ms time constant at ~40 fps (cutoff ~1.3 Hz).
+           Higher = suppresses slow rotation better but adapts slower (movement
+                    score lingers longer after gesture stops).
+           Lower = movement drops back to idle faster after gesture ends.
     """
     global _accel_lp
     raw = np.array(raw_accel, dtype=float)
@@ -357,15 +358,9 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     challenge_count = 0
     hold_counter = 0
     max_hold_frames = 3
-    movement_history: deque[float] = deque(maxlen=5)
+    movement_history: deque[float] = deque(maxlen=3)
     min_display_frames = 5
     display_age = 0
-    # Observation mode state (boxing type discrimination)
-    observe_until: int | None = None
-    punch_count = 0
-    prev_accel: list[float] | None = None
-    was_in_punch = False
-    punch_cooldown = 0
     # Cooldown after idle clear — prevents flash of stale predictions
     idle_cooldown = 0
 
@@ -385,16 +380,6 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
 
             if len(window) < args.window:
                 continue
-
-            current_accel: list[float] | None = None
-            for name, stype in sensor_types.items():
-                if stype == "imu" and name in frame_data:
-                    reading = frame_data[name]
-                    if reading and reading.data:
-                        accel = reading.data.get("accel", None)
-                        if accel is not None:
-                            current_accel = list(map(float, accel))
-                            break
 
             raw_movement = 0.0
             features = []
@@ -420,47 +405,6 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                 imu_readings = _gather_readings(window, "imu")
                 if imu_readings and _check_gyro_oscillation(imu_readings):
                     is_idle = False
-
-            # ── boxing observation: count punches, determine type ──
-            if observe_until is not None and current_accel is not None and prev_accel is not None:
-                delta = sum(abs(current_accel[i] - prev_accel[i]) for i in range(3))
-                in_punch = delta > args.punch_threshold
-                if args.debug:
-                    print(f"  [obs] punch={punch_count}, delta={delta:.3f} (th={args.punch_threshold}){' ⚡' if in_punch else ''}")
-                if punch_cooldown > 0:
-                    punch_cooldown -= 1
-                elif in_punch and not was_in_punch:
-                    punch_count += 1
-                    punch_cooldown = args.punch_cooldown
-                    was_in_punch = in_punch
-
-            if current_accel is not None:
-                prev_accel = current_accel[:]
-
-            if observe_until is not None:
-                if frame_count >= observe_until:
-                    if punch_count >= 2:
-                        displayed = "one-arm-boxing"
-                        print("> one-arm-boxing")
-                    else:
-                        displayed = "two-arm-boxing"
-                        print("> two-arm-boxing")
-                    display_age = 0
-                    challenge_count = 0
-                    challenge_label = None
-                    hold_counter = max_hold_frames
-                    # reset observation state
-                    observe_until = None
-                    punch_count = 0
-                    was_in_punch = False
-                    punch_cooldown = 0
-                    time.sleep(0.02)
-                    continue
-                else:
-                    if args.debug:
-                        print(f"  [obs] awaiting — punch={punch_count}")
-                    time.sleep(0.02)
-                    continue
 
             # ── idle ──
             if is_idle:
@@ -541,30 +485,12 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                     challenge_count = 1
 
                 if challenge_count >= args.change_frames:
-                    if smoothed in ("one-arm-boxing", "two-arm-boxing"):
-                        if movement < args.min_boxing_movement:
-                            if args.debug:
-                                print(f"  ⚠ ignoring boxing — low movement ({movement:.3f} < {args.min_boxing_movement})")
-                            # Fall through: show the model's prediction anyway
-                            print(f"> {smoothed}  (conf={conf:.2f}, low mvmt)")
-                            displayed = smoothed
-                            display_age = 0
-                            challenge_count = 0
-                            challenge_label = None
-                            hold_counter = max_hold_frames
-                        else:
-                            observe_until = frame_count + args.boxing_delay_frames
-                            punch_count = 0
-                            was_in_punch = False
-                            punch_cooldown = 0
-                            print(f"  observing for punches ({args.boxing_delay_frames} frames)...")
-                    else:
-                        print(f"> {smoothed}  (conf={conf:.2f})")
-                        displayed = smoothed
-                        display_age = 0
-                        challenge_count = 0
-                        challenge_label = None
-                        hold_counter = max_hold_frames
+                    print(f"> {smoothed}  (conf={conf:.2f})")
+                    displayed = smoothed
+                    display_age = 0
+                    challenge_count = 0
+                    challenge_label = None
+                    hold_counter = max_hold_frames
 
             time.sleep(0.02)
     except KeyboardInterrupt:
@@ -601,18 +527,12 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     challenge_label: str | None = None
     challenge_count = 0
     running = True
-    movement_history: deque[float] = deque(maxlen=5)
+    movement_history: deque[float] = deque(maxlen=3)
     hold_counter = 0
     max_hold_frames = 8
     min_display_frames = 5
     display_age = 0
     dims_warned = False
-    # Observation mode state (boxing type discrimination)
-    observe_until: int | None = None
-    punch_count = 0
-    prev_accel: list[float] | None = None
-    was_in_punch = False
-    punch_cooldown = 0
     idle_cooldown = 0  # suppresses predictions briefly after idle clears
     active_start: float | None = None
     total_active_time = 0.0
@@ -766,7 +686,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     def poll():
         nonlocal running, frame_count, displayed, challenge_label, challenge_count
         nonlocal hold_counter, movement_history, display_age, dims_warned, last_movement
-        nonlocal observe_until, punch_count, prev_accel, was_in_punch, punch_cooldown
+
         nonlocal idle_cooldown, active_start, total_active_time
         nonlocal fps_samples, last_fps_time, idle_start
 
@@ -796,17 +716,6 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
             stats_labels["fps"].config(text=f"fps  {fps:.1f}")
 
             if len(window) >= args.window:
-                # ── gather IMU data for boxing detection ─────────
-                current_accel: list[float] | None = None
-                for name, stype in sensor_types.items():
-                    if stype == "imu" and name in frame_data:
-                        reading = frame_data[name]
-                        if reading and reading.data:
-                            accel = reading.data.get("accel", None)
-                            if accel is not None:
-                                current_accel = list(map(float, accel))
-                                break
-
                 # ── compute features ────────────────────────────────
                 raw_movement = 0.0
                 features = []
@@ -863,47 +772,6 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                 move_val_label.config(text=f"{movement:.4f}  (τ={args.idle_threshold:.2f})")
                 _draw_bar(move_bar, min(movement / max(args.idle_threshold * 3, 0.01), 1.0),
                                PALETTE["fg_dim"])
-
-                # ── boxing observation: count punches, determine type ──
-                if observe_until is not None and current_accel is not None and prev_accel is not None:
-                    delta = sum(abs(current_accel[i] - prev_accel[i]) for i in range(3))
-                    in_punch = delta > args.punch_threshold
-                    if punch_cooldown > 0:
-                        punch_cooldown -= 1
-                    elif in_punch and not was_in_punch:
-                        punch_count += 1
-                        punch_cooldown = args.punch_cooldown
-                    was_in_punch = in_punch
-
-                if current_accel is not None:
-                    prev_accel = current_accel[:]
-
-                if observe_until is not None:
-                    if frame_count >= observe_until:
-                        if punch_count >= 2:
-                            display_text = "ONE-ARM-BOXING"
-                            displayed = "one-arm-boxing"
-                        else:
-                            display_text = "TWO-ARM-BOXING"
-                            displayed = "two-arm-boxing"
-                        gesture_label.config(text=display_text, fg=PALETTE["success"])
-                        display_age = 0
-                        challenge_count = 0
-                        challenge_label = None
-                        hold_counter = max_hold_frames
-                        error_label.config(text="")
-                        # reset observation state
-                        observe_until = None
-                        punch_count = 0
-                        was_in_punch = False
-                        punch_cooldown = 0
-                        root.after(25, poll)
-                        return
-                    else:
-                        gesture_label.config(fg=PALETTE["warn"])
-                        error_label.config(text=f"observing... {punch_count} punches", fg=PALETTE["fg_dim"])
-                        root.after(25, poll)
-                        return
 
                 # ── idle ──
                 if is_idle:
@@ -979,32 +847,14 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         challenge_count = 1
 
                     if challenge_count >= args.change_frames:
-                        if smoothed in ("one-arm-boxing", "two-arm-boxing"):
-                            if movement < args.min_boxing_movement:
-                                error_label.config(text=f"{smoothed} (low movement: {movement:.2f})", fg=PALETTE["warn"])
-                                display_upper = smoothed.upper()
-                                gesture_label.config(text=display_upper, fg=PALETTE["warn"])
-                                displayed = smoothed
-                                display_age = 0
-                                challenge_count = 0
-                                challenge_label = None
-                                hold_counter = max_hold_frames
-                            else:
-                                observe_until = frame_count + args.boxing_delay_frames
-                                punch_count = 0
-                                was_in_punch = False
-                                punch_cooldown = 0
-                                gesture_label.config(fg=PALETTE["warn"])
-                                error_label.config(text=f"observing for punches ({args.boxing_delay_frames} frames)...", fg=PALETTE["fg_dim"])
-                        else:
-                            display_upper = smoothed.upper()
-                            gesture_label.config(text=display_upper, fg="#ffffff")
-                            displayed = smoothed
-                            display_age = 0
-                            challenge_count = 0
-                            challenge_label = None
-                            hold_counter = max_hold_frames
-                            error_label.config(text="")
+                        display_upper = smoothed.upper()
+                        gesture_label.config(text=display_upper, fg="#ffffff")
+                        displayed = smoothed
+                        display_age = 0
+                        challenge_count = 0
+                        challenge_label = None
+                        hold_counter = max_hold_frames
+                        error_label.config(text="")
 
             # ── update stats bar sensor info ─────────────────────────
             stats_labels["sensor"].config(text=f"sensor  {', '.join(args.sensors)}")
