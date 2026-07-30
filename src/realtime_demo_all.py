@@ -5,6 +5,7 @@ import pickle
 import time
 import warnings
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -286,6 +287,9 @@ def _check_feature_dims(n_computed: int, n_expected: int, sensor_names: list[str
     )
 
 
+def _ts():
+    return datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
 def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sensor_types):
     frame_buffer = deque(maxlen=args.window)
     smooth_buffer: deque[str] = deque(maxlen=args.smooth)
@@ -373,10 +377,10 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                 if frame_count >= observe_until:
                     if punch_count >= 2:
                         displayed = "one-arm-boxing"
-                        print("> one-arm-boxing")
+                        print(f"[{_ts()}] one-arm-boxing")
                     else:
                         displayed = "two-arm-boxing"
-                        print("> two-arm-boxing")
+                        print(f"[{_ts()}] two-arm-boxing")
                     display_age = 0
                     challenge_count = 0
                     challenge_label = None
@@ -401,7 +405,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                         hold_counter -= 1
                         display_age += 1
                     else:
-                        print("  -> idle")
+                        print(f"[{_ts()}] idle")
                         displayed = None
                         smooth_buffer.clear()
                         challenge_count = 0
@@ -417,7 +421,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
             try:
                 label, conf = _predict(pipeline, gestures, features)
             except Exception as e:
-                print(f"  ⚠ Prediction error: {e}")
+                    print(f"[{_ts()}] ⚠ Prediction error: {e}")
                 time.sleep(0.02)
                 continue
             if conf < args.min_conf:
@@ -448,7 +452,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                             if args.debug:
                                 print(f"  ⚠ ignoring boxing — low movement ({movement:.3f} < {args.min_boxing_movement})")
                             # Fall through: show the model's prediction anyway
-                            print(f"> {smoothed}  (conf={conf:.2f}, low mvmt)")
+                            print(f"[{_ts()}] {smoothed}  (conf={conf:.2f}, low mvmt)")
                             displayed = smoothed
                             display_age = 0
                             challenge_count = 0
@@ -459,9 +463,9 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                             punch_count = 0
                             was_in_punch = False
                             punch_cooldown = 0
-                            print(f"  observing for punches ({args.boxing_delay_frames} frames)...")
+                            print(f"[{_ts()}] observing for punches ({args.boxing_delay_frames} frames)...")
                     else:
-                        print(f"> {smoothed}  (conf={conf:.2f})")
+                        print(f"[{_ts()}] {smoothed}  (conf={conf:.2f})")
                         displayed = smoothed
                         display_age = 0
                         challenge_count = 0
@@ -774,9 +778,11 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         if punch_count >= 2:
                             display_text = "ONE-ARM-BOXING"
                             displayed = "one-arm-boxing"
+                            print(f"[{_ts()}] one-arm-boxing")
                         else:
                             display_text = "TWO-ARM-BOXING"
                             displayed = "two-arm-boxing"
+                            print(f"[{_ts()}] two-arm-boxing")
                         gesture_label.config(text=display_text, fg=PALETTE["success"])
                         display_age = 0
                         challenge_count = 0
@@ -809,6 +815,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             challenge_count = 0
                             challenge_label = None
                             error_label.config(text="")
+                            print(f"[{_ts()}] idle")
                     else:
                         smooth_buffer.clear()
                         challenge_count = 0
@@ -823,6 +830,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     label, conf = _predict(pipeline, gestures, features)
                 except Exception as e:
                     error_label.config(text=f"⚠ prediction error: {e}", fg=PALETTE["warn"])
+                    print(f"[{_ts()}] ⚠ Prediction error: {e}")
                     root.after(30, poll)
                     return
 
@@ -859,6 +867,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                                 challenge_count = 0
                                 challenge_label = None
                                 hold_counter = max_hold_frames
+                                print(f"[{_ts()}] {smoothed}  (conf={conf:.2f}, low mvmt)")
                             else:
                                 observe_until = frame_count + args.boxing_delay_frames
                                 punch_count = 0
@@ -866,6 +875,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                                 punch_cooldown = 0
                                 gesture_label.config(fg=PALETTE["warn"])
                                 error_label.config(text=f"observing for punches ({args.boxing_delay_frames} frames)...", fg=PALETTE["fg_dim"])
+                                print(f"[{_ts()}] observing for punches ({args.boxing_delay_frames} frames)...")
                         else:
                             display_upper = smoothed.upper()
                             gesture_label.config(text=display_upper, fg="#ffffff")
@@ -875,6 +885,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             challenge_label = None
                             hold_counter = max_hold_frames
                             error_label.config(text="")
+                            print(f"[{_ts()}] {smoothed}  (conf={conf:.2f})")
 
             # ── update stats bar sensor info ─────────────────────────
             stats_labels["sensor"].config(text=f"sensor  {', '.join(args.sensors)}")
