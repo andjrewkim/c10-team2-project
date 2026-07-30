@@ -24,7 +24,7 @@ def extract_mmwave_features(frame: dict) -> list[float]:
     range_profile = data.get("range_profile", [])
 
     if not points:
-        return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     xs = np.array([p.get("x", 0) for p in points])
     ys = np.array([p.get("y", 0) for p in points])

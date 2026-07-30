@@ -279,11 +279,20 @@ def main() -> None:
             plt.close(fig)
 
             # save model
+            # Infer window_size from delta feature count in the feature names.
+            n_delta = sum(1 for fn in feature_names if 'delta' in fn)
+            _inferred_window = (n_delta // 8) + 1 if n_delta > 0 else 1
+
             model_data = {
                 "pipeline": pipeline,
                 "gestures": gestures,
                 "label_map": label_map,
                 "feature_names": feature_names,
+                "train_params": {
+                    "window_size": _inferred_window,
+                    "classifier": name,
+                    "param_label": label,
+                },
             }
             model_path = model_dir / f"{prefix}{label}.pkl"
             with open(model_path, "wb") as f:
@@ -298,6 +307,9 @@ def main() -> None:
 
     # Save best model copy to top-level
     if best_pipeline is not None:
+        # Infer window_size from delta feature count
+        n_delta = sum(1 for fn in feature_names if 'delta' in fn)
+        _inferred_window = (n_delta // 8) + 1 if n_delta > 0 else 1
         y_pred = best_pipeline.predict(X_test)
         cm = confusion_matrix(y_test, y_pred, labels=[label_map[g] for g in ordered_gestures if g in label_map])
         cm_norm = cm.astype("float") / cm.sum(axis=1, keepdims=True) * 100
@@ -321,6 +333,11 @@ def main() -> None:
             "gestures": gestures,
             "label_map": label_map,
             "feature_names": feature_names,
+            "train_params": {
+                "window_size": _inferred_window,
+                "classifier": best_classifier_name,
+                "param_label": best_name,
+            },
         }
         best_dst = out_dir / "best_model.pkl"
         with open(best_dst, "wb") as f:

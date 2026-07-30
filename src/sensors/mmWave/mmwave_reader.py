@@ -20,6 +20,11 @@ class MmWaveReader(BaseReader):
             cfg_path=cfg_path,
         )
         self._started = False
+        # Cache last successful reading so we can detect genuine
+        # disconnection (same object returned) vs. empty detections
+        # (fresh object with zero data).  The staleness checker in
+        # the demo uses id(reading) to differentiate these cases.
+        self._last_reading: Reading | None = None
 
     def start(self) -> None:
         self._sensor.start()
@@ -28,16 +33,18 @@ class MmWaveReader(BaseReader):
     def read(self) -> Reading:
         obs_list = self._sensor.read()
         if not obs_list:
+            if self._last_reading is not None:
+                return self._last_reading
             return Reading(
                 sensor_id=self.sensor_id,
                 sensor_type=self.sensor_type,
-                data={"points": [], "num_points": 0},
+                data={"points": [], "num_points": 0, "range_profile": None, "motion_score": 0.0},
                 confidence=0.0,
             )
         obs = obs_list[0]
         observation = obs.observation or {}
         points = observation.get("objects", [])
-        return Reading(
+        self._last_reading = Reading(
             sensor_id=self.sensor_id,
             sensor_type=self.sensor_type,
             timestamp=obs.timestamp,
@@ -58,6 +65,7 @@ class MmWaveReader(BaseReader):
             },
             confidence=obs.confidence,
         )
+        return self._last_reading
 
     def stop(self) -> None:
         if self._started:

@@ -35,15 +35,18 @@ def extract_features_from_reading(reading: any, sensor_type: str) -> list[float]
         data = reading.data
         points = data.get("points", [])
         num_points = data.get("num_points", len(points))
+        range_profile = data.get("range_profile", [])
         if not points:
-            return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0]
+            return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         xs = np.array([p.get("x", 0) for p in points])
         ys = np.array([p.get("y", 0) for p in points])
         return [
             float(num_points),
             float(np.mean(xs)), float(np.std(xs)),
+            float(np.min(xs)),  # closest point
             float(np.mean(ys)), float(np.std(ys)),
-            float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)),
+            float(range_profile[0]) if range_profile else 0.0,
+            float(np.sqrt(np.mean(xs)**2 + np.mean(ys)**2)),  # distance from origin
         ]
     elif sensor_type == "imu":
         data = reading.data
@@ -168,7 +171,7 @@ def _gather_readings(window: list[dict], name: str) -> list:
 def _compute_features(readings: list, sensor_type: str) -> list[float]:
     sensor_feats = np.array([extract_features_from_reading(r, sensor_type) for r in readings])
     if len(sensor_feats) == 0:
-        n = (6 + 2) + (6 + 2) + ((3 + 3 + 2) * (len(readings) - 1)) if sensor_type == "imu" else 13
+        n = (6 + 2) + (6 + 2) + ((3 + 3 + 2) * (len(readings) - 1)) if sensor_type == "imu" else 17
         return [0.0] * n
 
     if sensor_type == "imu":
@@ -239,6 +242,63 @@ def _check_feature_dims(n_computed: int, n_expected: int, sensor_names: list[str
     )
 
 
+def _infer_window_size(
+    n_features_expected: int,
+    sensors: list[str],
+    feature_names: list[str] | None = None,
+) -> int | None:
+    """Infer the required window size from the model's feature count.
+
+    The feature computation in ``_compute_features`` produces a deterministic
+    number of features given the window size.  For IMU + mmwave:
+
+        mmwave: 8 mean + 8 std + 1 path   = 17
+        IMU:    8 mean + 8 std + 8 RMS + 8 ZCR
+                + 8*(W-1) deltas           = 32 + 8*(W-1)
+        total (base):  49 + 8*(W-1)
+
+    Some models (e.g. imu_v3) include extra features (spectral, correlation).
+    We detect those via ``feature_names`` and subtract them before computing
+    the base IMU feature count.
+
+    Returns
+    -------
+    int | None
+        Inferred window size, or None if it cannot be determined.
+    """
+    has_mm = "mmwave" in sensors
+    has_imu = "imu" in sensors
+
+    # Subtract extra (non-base) features that some model versions add.
+    extra = 0
+    if feature_names:
+        extra = sum(1 for fn in feature_names
+                    if 'spec_' in fn or 'corr_' in fn)
+
+    if has_mm and has_imu:
+        # 17 mmwave + 32 IMU base + 8*(W-1) IMU deltas
+        remaining = n_features_expected - extra - 49
+        if remaining >= 0 and remaining % 8 == 0:
+            return remaining // 8 + 1
+    elif has_imu and not has_mm:
+        # 32 IMU base + 8*(W-1) IMU deltas
+        remaining = n_features_expected - extra - 32
+        if remaining >= 0 and remaining % 8 == 0:
+            return remaining // 8 + 1
+    elif has_mm and not has_imu:
+        if n_features_expected == 17 + extra:
+            return 1
+
+    # Last resort: brute-force search plausible window sizes
+    plausible = [2, 3, 5, 10, 15, 20, 25, 30]
+    for w in plausible:
+        base = (17 if has_mm else 0) + (32 + 8 * (w - 1) if has_imu else 0)
+        if base + extra == n_features_expected:
+            return w
+
+    return None
+
+
 def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sensor_types):
     frame_buffer = deque(maxlen=args.window)
     smooth_buffer: deque[str] = deque(maxlen=args.smooth)
@@ -251,6 +311,14 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     movement_history: deque[float] = deque(maxlen=5)
     min_display_frames = 5
     display_age = 0
+    # ── gesture timeout / cooldown (prevents infinite sticking) ─
+    GESTURE_MAX_AGE = 100
+    GESTURE_COOLDOWN = 25
+    gesture_cooldown = 0
+    # ── sensor staleness tracking ─────────────────────────────────
+    _sensor_signature: dict[str, int] = {}    # sensor name -> id(reading)
+    _stale_frame_count: dict[str, int] = {}   # consecutive frames with same sig
+    _SENSOR_STALE_LIMIT = 30                  # frames of identical object before forcing idle
     # Observation mode state (boxing type discrimination)
     observe_until: int | None = None
     punch_count = 0
@@ -281,6 +349,42 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                             current_accel = list(map(float, accel))
                             break
 
+            # ── sensor staleness check ──────────────────────────────
+            # Uses reading *object identity* (id()) so that freshly-constructed
+            # Reading objects — even with identical data content — are NOT
+            # flagged as stale.  This matters for sensors like mmWave which
+            # create a new Reading for every read() call, even when no
+            # targets are detected.  Staleness should only catch readers
+            # that return the *exact same object* (e.g. IMU returning
+            # _last_reading when the device disconnects).
+            force_idle = False
+            if frame_count > args.window * 2:
+                for sname in sensor_types:
+                    reading = frame_data.get(sname)
+                    if reading is None:
+                        continue
+                    sig = id(reading)
+                    prev = _sensor_signature.get(sname)
+                    if prev is not None and sig == prev:
+                        _stale_frame_count[sname] = _stale_frame_count.get(sname, 0) + 1
+                    else:
+                        _stale_frame_count[sname] = 0
+                    _sensor_signature[sname] = sig
+                # Only force idle when EVERY sensor has been returning
+                # the exact same Reading object for many frames.
+                # Increased limit from 15 → 30 to avoid false positives
+                # during brief sensor dropouts.
+                stale_sensors = sum(
+                    1 for s in sensor_types
+                    if _stale_frame_count.get(s, 0) >= _SENSOR_STALE_LIMIT
+                )
+                if stale_sensors == len(sensor_types) and stale_sensors > 0:
+                    if args.debug:
+                        print(f"  [stale] ALL sensors stale for >= {_SENSOR_STALE_LIMIT} frames — forcing idle")
+                        for s in sensor_types:
+                            print(f"          {s}: stale_count={_stale_frame_count.get(s,0)}")
+                    force_idle = True
+
             raw_movement = 0.0
             features = []
             for name in args.sensors:
@@ -298,6 +402,14 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
 
             is_idle = movement < args.idle_threshold
 
+            # ── sensor staleness override ────────────────────────────
+            if force_idle:
+                is_idle = True
+
+            # ── --no-idle override (debugging) ────────────────────────
+            if args.no_idle:
+                is_idle = False
+
             # ── gyro oscillation override ──────────────────────────────
             # Soli (finger rub) produces minimal wrist accel but distinctive
             # oscillatory gyro.  Override idle so the model gets to classify it.
@@ -305,6 +417,22 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                 imu_readings = _gather_readings(window, "imu")
                 if imu_readings and _check_gyro_oscillation(imu_readings):
                     is_idle = False
+
+            # ── debug readings ────────────────────────────────────────
+            if args.debug_readings and frame_count % args.print_readings_every == 0:
+                for name in args.sensors:
+                    readings = _gather_readings(window, name)
+                    if readings:
+                        last = readings[-1]
+                        if sensor_types[name] == "imu":
+                            a = last.data.get("accel", [0,0,0])
+                            g = last.data.get("gyro", [0,0,0])
+                            print(f"  [reading] {name}: accel=({a[0]:.3f},{a[1]:.3f},{a[2]:.3f}) "
+                                  f"gyro=({g[0]:.3f},{g[1]:.3f},{g[2]:.3f})")
+                        elif sensor_types[name] == "mmwave":
+                            pts = last.data.get("points", [])
+                            print(f"  [reading] {name}: num_points={len(pts)}")
+                print(f"  [reading] movement={movement:.4f} (τ={args.idle_threshold:.2f}) is_idle={is_idle}")
 
             # ── boxing observation: count punches, determine type ──
             if observe_until is not None and current_accel is not None and prev_accel is not None:
@@ -339,6 +467,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                     punch_count = 0
                     was_in_punch = False
                     punch_cooldown = 0
+                    gesture_cooldown = 0
                     time.sleep(0.02)
                     continue
                 else:
@@ -346,6 +475,18 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                         print(f"  [obs] awaiting — punch={punch_count}")
                     time.sleep(0.02)
                     continue
+
+            # ── predict (BEFORE idle check so raw predictions are visible) ──
+            try:
+                label, conf = _predict(pipeline, gestures, features)
+            except Exception as e:
+                print(f"  ⚠ Prediction error: {e}")
+                time.sleep(0.02)
+                continue
+
+            # ── raw predictions (always print, even when idle) ───────
+            if args.raw_predictions:
+                print(f"  [raw] {label}  (conf={conf:.3f})  movement={movement:.4f}  is_idle={is_idle}")
 
             # ── idle ──
             if is_idle:
@@ -359,6 +500,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                         smooth_buffer.clear()
                         challenge_count = 0
                         challenge_label = None
+                        gesture_cooldown = GESTURE_COOLDOWN
                 else:
                     smooth_buffer.clear()
                     challenge_count = 0
@@ -367,12 +509,22 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
 
             hold_counter = max_hold_frames
 
-            try:
-                label, conf = _predict(pipeline, gestures, features)
-            except Exception as e:
-                print(f"  ⚠ Prediction error: {e}")
+            # ── gesture max-age timeout (prevents infinite sticking) ──
+            if displayed is not None and display_age >= GESTURE_MAX_AGE:
+                print(f"  -> gesture timeout ({display_age} frames)")
+                displayed = None
+                smooth_buffer.clear()
+                challenge_count = 0
+                challenge_label = None
+                gesture_cooldown = GESTURE_COOLDOWN
+                continue
+
+            # ── gesture cooldown (wait before re-displaying) ─────────
+            if gesture_cooldown > 0:
+                gesture_cooldown -= 1
                 time.sleep(0.02)
                 continue
+
             if conf < args.min_conf:
                 continue
             smooth_buffer.append(label)
@@ -420,6 +572,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                         challenge_count = 0
                         challenge_label = None
                         hold_counter = max_hold_frames
+                        gesture_cooldown = 0  # fresh gesture, reset cooldown
 
             time.sleep(0.02)
     except KeyboardInterrupt:
@@ -452,6 +605,10 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     min_display_frames = 5
     display_age = 0
     dims_warned = False
+    # GESTURE_TIMEOUT — prevents infinite gesture sticking
+    GESTURE_MAX_AGE = 100          # auto-dismiss after ~2.5s (at 25ms/frame)
+    GESTURE_COOLDOWN = 25          # wait ~0.6s before re-displaying a gesture
+    gesture_cooldown = 0
     # Observation mode state (boxing type discrimination)
     observe_until: int | None = None
     punch_count = 0
@@ -463,8 +620,16 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     fps_samples: deque[float] = deque(maxlen=60)
     last_fps_time: float | None = None
     idle_start: float | None = None
+    # ── gesture log (timestamp, gesture, confidence) ───────────────
+    gesture_log: deque[dict] = deque(maxlen=200)
+    last_conf: float = 0.0
+    _session_start_time = time.time()
+    # ── sensor staleness tracking ─────────────────────────────────
+    _sensor_signature: dict[str, int] = {}    # sensor name -> id(reading)
+    _stale_frame_count: dict[str, int] = {}   # consecutive frames with same sig
+    _SENSOR_STALE_LIMIT = 30                  # frames of identical object before forcing idle
 
-    # ── colour palette (plain data-science) ─────────────────────────
+    # ── colour palette (dark) ───────────────────────────────────────
     PALETTE = {
         "bg": "#0d0d10",
         "fg": "#d4d4dc",
@@ -514,15 +679,108 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     rule = tk.Frame(root, height=1, bg=PALETTE["fg_muted"])
     rule.pack(fill="x", padx=16, pady=(4, 8))
 
-    # ── main content area (single centered column) ──────────────────
-    main = tk.Frame(root, bg=PALETTE["bg"])
-    main.pack(fill="both", expand=True)
+    # ── content area: main + sidebar ──────────────────────────────
+    content = tk.Frame(root, bg=PALETTE["bg"])
+    content.pack(fill="both", expand=True)
+    content.grid_columnconfigure(0, weight=1)
+    content.grid_columnconfigure(1, weight=0)
+    content.grid_rowconfigure(0, weight=1)
+
+    # ── main content area (left, centered column) ──────────────────
+    main = tk.Frame(content, bg=PALETTE["bg"])
+    main.grid(row=0, column=0, sticky="nsew")
 
     # weight so the gesture label can expand into available space
     main.grid_rowconfigure(0, weight=1)
     main.grid_rowconfigure(1, weight=0)
     main.grid_rowconfigure(2, weight=0)
     main.grid_columnconfigure(0, weight=1)
+
+    # ═════════════════════════════════════════════════════════════════
+    # SIDEBAR — Gesture History Log
+    # ═════════════════════════════════════════════════════════════════
+    sidebar = tk.Frame(content, bg=PALETTE["bg"], width=280)
+    sidebar.grid(row=0, column=1, sticky="ns", padx=(0, 0))
+    sidebar.grid_propagate(False)  # enforce width
+
+    # left border for sidebar
+    tk.Frame(sidebar, width=1, bg=PALETTE["fg_muted"]).pack(fill="y", side="left")
+
+    # sidebar header
+    sidebar_header = tk.Frame(sidebar, bg=PALETTE["bg"])
+    sidebar_header.pack(fill="x", padx=8, pady=(8, 2))
+    tk.Label(sidebar_header, text="GESTURE LOG", font=("Helvetica", 8, "bold"),
+             fg=PALETTE["accent"], bg=PALETTE["bg"]).pack(side="left")
+    tk.Label(sidebar_header, text=f"max {gesture_log.maxlen}", font=("Helvetica", 7),
+             fg=PALETTE["fg_muted"], bg=PALETTE["bg"]).pack(side="right")
+
+    # thin rule under header
+    tk.Frame(sidebar, height=1, bg=PALETTE["fg_muted"]).pack(fill="x", padx=8, pady=(2, 4))
+
+    # scrollable log area
+    log_canvas = tk.Canvas(sidebar, bg=PALETTE["bg"], highlightthickness=0)
+    log_scroll = tk.Scrollbar(sidebar, orient="vertical", command=log_canvas.yview)
+    log_canvas.configure(yscrollcommand=log_scroll.set)
+
+    log_canvas.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=(0, 8))
+    log_scroll.pack(side="right", fill="y", pady=(0, 8))
+
+    log_frame = tk.Frame(log_canvas, bg=PALETTE["bg"])
+    log_canvas.create_window((0, 0), window=log_frame, anchor="nw", tags="inner")
+
+    def _configure_log_inner(event=None):
+        log_canvas.itemconfigure("inner", width=log_canvas.winfo_width())
+    log_canvas.bind("<Configure>", _configure_log_inner)
+
+    # Pre-populate with a placeholder until first gesture arrives
+    placeholder = tk.Label(log_frame, text="[no gestures yet]", font=FONTS["mono_tiny"],
+                           fg=PALETTE["fg_muted"], bg=PALETTE["bg"])
+    placeholder.pack(padx=4, pady=2)
+
+    def _add_log_entry(gesture_name: str, confidence: float):
+        """Append a gesture event to the sidebar log and auto-scroll to show latest."""
+        now = time.time()
+        entry = {"time": now, "gesture": gesture_name, "confidence": confidence}
+        gesture_log.append(entry)
+
+        # Remove placeholder on first entry
+        if placeholder.winfo_exists():
+            placeholder.destroy()
+
+        # Build row
+        row = tk.Frame(log_frame, bg=PALETTE["bg"])
+        row.pack(fill="x", padx=4, pady=(1, 1))
+
+        # Timestamp (seconds elapsed since session start)
+        elapsed = now - _session_start_time
+        ts_lbl = tk.Label(row, text=f"+{elapsed:5.1f}s", font=FONTS["mono_tiny"],
+                          fg=PALETTE["fg_muted"], bg=PALETTE["bg"], width=7, anchor="e")
+        ts_lbl.pack(side="left", padx=(0, 4))
+
+        # Gesture name
+        g_lbl = tk.Label(row, text=gesture_name.upper(), font=("Courier", 8, "bold"),
+                         fg=PALETTE["fg"], bg=PALETTE["bg"], anchor="w")
+        g_lbl.pack(side="left", fill="x", expand=True)
+
+        # Confidence bar (max 50px wide, colored by threshold)
+        bar_frame = tk.Frame(row, bg=PALETTE["bg"], width=50, height=10)
+        bar_frame.pack(side="right", padx=(4, 0))
+        bar_frame.pack_propagate(False)
+        conf_pct = confidence * 100
+        bar_w = max(1, int(50 * min(confidence, 1.0)))
+        bar_color = PALETTE["success"] if confidence >= 0.8 else (PALETTE["warn"] if confidence >= 0.5 else PALETTE["fg_dim"])
+        inner = tk.Frame(bar_frame, bg=bar_color, width=bar_w, height=10)
+        inner.pack(side="left")
+        tk.Frame(bar_frame, bg=PALETTE["bg"], width=50 - bar_w, height=10).pack(side="left")
+
+        # Confidence percentage label
+        tk.Label(row, text=f"{conf_pct:.0f}%", font=FONTS["mono_tiny"],
+                 fg=bar_color, bg=PALETTE["bg"], width=3, anchor="e").pack(side="right")
+
+        # Auto-scroll to bottom so the most recent entry is always visible
+        log_canvas.yview_moveto(1.0)
+
+
 
     # ═════════════════════════════════════════════════════════════════
     # GESTURE PREDICTION (centred, expands)
@@ -534,7 +792,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
 
     # ── movement meter ───────────────────────────────────────────────
     move_frame = tk.Frame(main, bg=PALETTE["bg"])
-    move_frame.grid(row=1, column=0, pady=(0, 8), padx=60, sticky="ew")
+    move_frame.grid(row=1, column=0, pady=(0, 8), padx=30, sticky="ew")
     move_frame.grid_columnconfigure(0, weight=1)
 
     move_row = tk.Frame(move_frame, bg=PALETTE["bg"])
@@ -572,19 +830,31 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     stats_bar = tk.Frame(root, bg=PALETTE["bg"])
     stats_bar.pack(fill="x", padx=16, pady=(0, 8))
 
-    stats_labels = {}
-    for i, (key, text) in enumerate([
+    stats_labels: dict[str, tk.Label] = {}
+    common_stats = [
         ("frames", "frames"),
         ("active", "active"),
         ("fps", "fps"),
         ("idle", "idle"),
+        ("conf", "conf"),
         ("sensor", "sensor"),
         ("mode", "mode"),
-    ]):
+    ]
+    for key, text in common_stats:
         lbl = tk.Label(stats_bar, text=f"{text}  —", font=FONTS["mono_tiny"],
                        fg=PALETTE["fg_dim"], bg=PALETTE["bg"])
         lbl.pack(side="left", padx=(0, 12))
         stats_labels[key] = lbl
+
+    # ── sensor-specific status labels (one per active sensor) ────────
+    # Created here but updated each frame; empty if no sensors active.
+    _sensor_status_labels: dict[str, tk.Label] = {}
+    for name, stype in sensor_types.items():
+        prefix = stype[:3]
+        lbl = tk.Label(stats_bar, text=f"{prefix}  ○ —", font=FONTS["mono_tiny"],
+                       fg=PALETTE["fg_dim"], bg=PALETTE["bg"])
+        lbl.pack(side="left", padx=(0, 12))
+        _sensor_status_labels[name] = lbl
 
     error_label = tk.Label(root, text="", font=FONTS["mono_tiny"],
                            fg=PALETTE["warn"], bg=PALETTE["bg"], wraplength=680)
@@ -612,7 +882,8 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
         nonlocal hold_counter, movement_history, display_age, dims_warned, last_movement
         nonlocal observe_until, punch_count, prev_accel, was_in_punch, punch_cooldown
         nonlocal active_start, total_active_time
-        nonlocal fps_samples, last_fps_time, idle_start
+        nonlocal fps_samples, last_fps_time, idle_start, last_conf
+        nonlocal gesture_cooldown, _sensor_signature, _stale_frame_count
 
         if not running:
             return
@@ -640,6 +911,32 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
             stats_labels["fps"].config(text=f"fps  {fps:.1f}")
 
             if len(window) >= args.window:
+                    # ── sensor staleness check ──────────────────────────
+                # Uses reading *object identity* (id()) so that freshly-
+                # constructed Reading objects are NOT flagged as stale
+                # even when data content is identical.
+                force_idle = False
+                if frame_count > args.window * 2:
+                    for sname in sensor_types:
+                        reading = frame_data.get(sname)
+                        if reading is None:
+                            continue
+                        sig = id(reading)
+                        prev = _sensor_signature.get(sname)
+                        if prev is not None and sig == prev:
+                            _stale_frame_count[sname] = _stale_frame_count.get(sname, 0) + 1
+                        else:
+                            _stale_frame_count[sname] = 0
+                        _sensor_signature[sname] = sig
+                    # Only force idle when ALL sensors return the exact
+                    # same Reading object for many frames.
+                    stale_sensors = sum(
+                        1 for s in sensor_types
+                        if _stale_frame_count.get(s, 0) >= _SENSOR_STALE_LIMIT
+                    )
+                    if stale_sensors == len(sensor_types) and stale_sensors > 0:
+                        force_idle = True
+
                 # ── gather IMU data for boxing detection ─────────
                 current_accel: list[float] | None = None
                 for name, stype in sensor_types.items():
@@ -670,6 +967,16 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                 last_movement = movement
 
                 is_idle = movement < args.idle_threshold
+
+                # ── sensor staleness override ────────────────────────
+                # When all sensors return identical data for many frames
+                # (disconnected / stale), force idle to prevent lock-on.
+                if force_idle:
+                    is_idle = True
+
+                # ── --no-idle override (debugging) ────────────────────
+                if args.no_idle:
+                    is_idle = False
 
                 # ── gyro oscillation override ────────────────────────
                 # Soli (finger rub) produces minimal wrist accel but
@@ -731,6 +1038,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             display_text = "TWO-ARM-BOXING"
                             displayed = "two-arm-boxing"
                         gesture_label.config(text=display_text, fg=PALETTE["success"])
+                        _add_log_entry(displayed, last_conf)
                         display_age = 0
                         challenge_count = 0
                         challenge_label = None
@@ -762,6 +1070,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             challenge_count = 0
                             challenge_label = None
                             error_label.config(text="")
+                            gesture_cooldown = GESTURE_COOLDOWN
                     else:
                         smooth_buffer.clear()
                         challenge_count = 0
@@ -771,6 +1080,24 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
 
                 hold_counter = max_hold_frames
 
+                # ── gesture max-age timeout (prevents infinite sticking) ──
+                if displayed is not None and display_age >= GESTURE_MAX_AGE:
+                    gesture_label.config(text="—", fg="#ffffff")
+                    displayed = None
+                    smooth_buffer.clear()
+                    challenge_count = 0
+                    challenge_label = None
+                    error_label.config(text="")
+                    gesture_cooldown = GESTURE_COOLDOWN
+                    root.after(25, poll)
+                    return
+
+                # ── gesture cooldown (wait before re-displaying) ─────────
+                if gesture_cooldown > 0:
+                    gesture_cooldown -= 1
+                    root.after(25, poll)
+                    return
+
                 # ── predict ──────────────────────────────────────────
                 try:
                     label, conf = _predict(pipeline, gestures, features)
@@ -778,6 +1105,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     error_label.config(text=f"⚠ prediction error: {e}", fg=PALETTE["warn"])
                     root.after(30, poll)
                     return
+                last_conf = conf
 
                 if conf >= args.min_conf:
                     smooth_buffer.append(label)
@@ -807,6 +1135,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                                 error_label.config(text=f"{smoothed} (low movement: {movement:.2f})", fg=PALETTE["warn"])
                                 display_upper = smoothed.upper()
                                 gesture_label.config(text=display_upper, fg=PALETTE["warn"])
+                                _add_log_entry(smoothed, conf)
                                 displayed = smoothed
                                 display_age = 0
                                 challenge_count = 0
@@ -822,16 +1151,68 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         else:
                             display_upper = smoothed.upper()
                             gesture_label.config(text=display_upper, fg="#ffffff")
+                            _add_log_entry(smoothed, conf)
                             displayed = smoothed
                             display_age = 0
                             challenge_count = 0
                             challenge_label = None
                             hold_counter = max_hold_frames
+                            gesture_cooldown = 0  # fresh gesture, reset cooldown
                             error_label.config(text="")
 
             # ── update stats bar sensor info ─────────────────────────
             stats_labels["sensor"].config(text=f"sensor  {', '.join(args.sensors)}")
             stats_labels["mode"].config(text=f"mode  {args.mode}")
+
+            # ── live sensor status readout ───────────────────────────
+            for name, stype in sensor_types.items():
+                lbl = _sensor_status_labels.get(name)
+                if lbl is None:
+                    continue
+                reading = frame_data.get(name)
+                if reading is None or not reading.data:
+                    lbl.config(text=f"{stype[:3]}  ○ connecting…", fg=PALETTE["fg_dim"])
+                    continue
+
+                if stype == "imu":
+                    accel = reading.data.get("accel", None)
+                    gyro = reading.data.get("gyro", None)
+                    if accel is not None:
+                        accel_str = f"a({accel[0]:+.2f},{accel[1]:+.2f},{accel[2]:+.2f})"
+                        gyro_str = f"g({gyro[0]:+.1f},{gyro[1]:+.1f},{gyro[2]:+.1f})" if gyro else ""
+                        lbl.config(
+                            text=f"imu  ● {accel_str} {gyro_str}",
+                            fg=PALETTE["success"],
+                        )
+                    else:
+                        lbl.config(text="imu  ○ no data", fg=PALETTE["fg_muted"])
+
+                elif stype == "mmwave":
+                    npts = reading.data.get("num_points")
+                    if npts is not None:
+                        lbl.config(
+                            text=f"mmw  ● {npts}pts",
+                            fg=PALETTE["success"],
+                        )
+                    else:
+                        lbl.config(text="mmw  ○ no detect", fg=PALETTE["warn"])
+
+                elif stype == "uwb":
+                    ranges = reading.data.get("ranges_cm", reading.data.get("raw_ranges", []))
+                    valid = [r for r in ranges if isinstance(r, (int, float)) and r > 0]
+                    if valid:
+                        lbl.config(
+                            text=f"{name}  ● {len(valid)}tg {min(valid):.0f}cm",
+                            fg=PALETTE["success"],
+                        )
+                    else:
+                        lbl.config(text=f"{name}  ○ no tags", fg=PALETTE["fg_muted"])
+
+            # ── per-frame confidence ─────────────────────────────────
+            # Show the latest raw prediction confidence (before smoothing)
+            if last_conf > 0:
+                conf_color = PALETTE["success"] if last_conf >= 0.8 else (PALETTE["warn"] if last_conf >= 0.5 else PALETTE["fg_dim"])
+                stats_labels["conf"].config(text=f"conf  {last_conf*100:.0f}%", fg=conf_color)
 
         except Exception as e:
             error_label.config(text=f"⚠ {e}", fg=PALETTE["warn"])
@@ -874,8 +1255,8 @@ def main() -> None:
                         help="Serial ports for UWB devices")
     parser.add_argument("--window", type=int, default=5,
                         help="Window size (matches training)")
-    parser.add_argument("--idle-threshold", type=float, default=0.45,
-                        help="Movement score below this = idle (default: 0.45)")
+    parser.add_argument("--idle-threshold", type=float, default=0.12,
+                        help="Movement score below this = idle (default: 0.12)")
     parser.add_argument("--min-conf", type=float, default=0.68,
                         help="Minimum prediction confidence to accept (default: 0.68)")
     parser.add_argument("--smooth", type=int, default=10,
@@ -896,16 +1277,28 @@ def main() -> None:
                         help="Minimum movement score to trigger boxing observation (default: 0.8)")
     parser.add_argument("--accel-gain", type=float, default=1.05,
                         help="Scale factor for accelerometer values (default: 1.05 — tiny emphasis on linear movement)")
-    parser.add_argument("--gyro-gain", type=float, default=0.6,
-                        help="Scale factor for gyro values before model (default: 0.6)")
-    parser.add_argument("--gyro-deadband", type=float, default=2.0,
-                        help="Gyro deadband in dps — values below this are zeroed out (default: 2.0)")
+    parser.add_argument("--gyro-gain", type=float, default=1.0,
+                        help="Scale factor for gyro values before model (default: 1.0)")
+    parser.add_argument("--gyro-deadband", type=float, default=0.0,
+                        help="Gyro deadband in dps — values below this are zeroed out (default: 0.0 — no deadband)")
     parser.add_argument("--debug", action="store_true",
                         help="Print per-frame predictions")
+    parser.add_argument("--mmwave-port", default="/dev/cu.usbserial-BH00LUQT",
+                        help="mmWave serial port (default: /dev/cu.usbserial-BH00LUQT)")
+    parser.add_argument("--mmwave-cfg", default="config/point_cloud.cfg",
+                        help="mmWave config file path (default: config/point_cloud.cfg)")
     parser.add_argument("--imu-port", default=None,
                         help="IMU serial port")
     parser.add_argument("--imu-baud", type=int, default=115200,
                         help="IMU serial baud rate")
+    parser.add_argument("--no-idle", action="store_true",
+                        help="Disable idle detection — always run prediction")
+    parser.add_argument("--raw-predictions", action="store_true",
+                        help="Print ALL raw predictions to terminal, regardless of confidence")
+    parser.add_argument("--debug-readings", action="store_true",
+                        help="Print raw sensor readings and movement score every N frames")
+    parser.add_argument("--print-readings-every", type=int, default=30,
+                        help="How often to print raw readings with --debug-readings (default: 30 frames)")
     args = parser.parse_args()
 
     model_path = Path(args.model)
@@ -929,11 +1322,67 @@ def main() -> None:
             gestures_list = data["gestures"].tolist() if "gestures" in data else []
 
     expected_n_features = pipeline.n_features_in_
+
+    # ── auto-detect sensor order from model's feature_names ───────────
+    model_feature_names = raw.get("feature_names", [])
+    if model_feature_names and args.sensors:
+        # Detect which sensors were used during training from feature names
+        trained_sensors = []
+        imu_count = sum(1 for fn in model_feature_names if fn.startswith("imu_"))
+        mm_count = sum(1 for fn in model_feature_names if fn.startswith("mm_"))
+        uwb_count = sum(1 for fn in model_feature_names if fn.startswith("uwb") or "uwb_" in fn)
+        if mm_count > 0:
+            trained_sensors.append("mmwave")
+        if imu_count > 0:
+            trained_sensors.append("imu")
+        if uwb_count > 0:
+            trained_sensors.append("uwb")
+        if trained_sensors and trained_sensors != args.sensors:
+            print(f"  ⚠ Auto-overriding --sensors from {args.sensors} to {trained_sensors}")
+            print(f"     (model was trained with {trained_sensors}; "
+                  f"add --sensors to override)")
+            args.sensors = trained_sensors
+
+    # ── auto-detect window size from model metadata or feature count ──
+    train_params = raw.get("train_params", {})
+    model_window = train_params.get("window_size", None)
+    if model_window is not None and model_window != args.window:
+        original_w = args.window
+        args.window = model_window
+        print(f"  ⚠ Window size mismatch: model was trained with window={model_window}, "
+              f"but --window={original_w} was specified.")
+        print(f"     Auto-overriding to --window {model_window} to match the model.")
+    else:
+        inferred_w = _infer_window_size(expected_n_features, args.sensors, model_feature_names)
+        if inferred_w is not None and inferred_w != args.window:
+            original_w = args.window
+            args.window = inferred_w
+            print(f"  ⚠ Window size mismatch: model was trained with window={inferred_w}, "
+                  f"but --window={original_w} was specified.")
+            print(f"     Auto-overriding to --window {inferred_w} to match the model.")
+        elif inferred_w is None:
+            print(f"  ⚠ Could not auto-detect window size from model features.")
+            print(f"     Make sure --window matches the value used during training.")
+            print(f"     Model expects {expected_n_features} features, but the current setup "
+                  f"(sensors={args.sensors}) would produce different dimensions.")
+            print(f"     Consider using the latest model at models/train_all_data/best_model.pkl")
+
     print(f"Loaded: {model_path}")
     if gestures_list:
         print(f"Gestures: {', '.join(gestures_list)}")
     print(f"Features expected by model: {expected_n_features}")
+    if model_feature_names:
+        n_mm = sum(1 for fn in model_feature_names if fn.startswith('mm_'))
+        n_imu = sum(1 for fn in model_feature_names if fn.startswith('imu_'))
+        print(f"  Sensor breakdown: mmwave={n_mm} feats, imu={n_imu} feats")
+        extra = [fn for fn in model_feature_names if 'spec_' in fn or 'corr_' in fn]
+        if extra:
+            print(f"  ⚠ Model has {len(extra)} extra features (spectral/correlation) that")
+            print(f"     the runtime may not produce. Consider retraining with the current feature set.")
     print(f"Window: {args.window}, threshold: {args.idle_threshold}")
+    if len(args.sensors) > 1:
+        print(f"  Sensor order: {', '.join(args.sensors)} — features are concatenated in this order.")
+        print(f"     Must match the order used during training (typically mmwave first, then imu).")
     print()
 
     reader_map: dict[str, any] = {}
@@ -960,6 +1409,12 @@ def main() -> None:
             sensor_types[name] = reader.sensor_type
             port_info = f" port={args.imu_port}" if args.imu_port else ""
             print(f"  Started {name} reader ({imu_mode} mode{port_info})")
+        elif name == "mmwave":
+            reader = cls(mode=args.mode, serial_port=args.mmwave_port, cfg_path=args.mmwave_cfg)
+            reader.start()
+            reader_map[name] = reader
+            sensor_types[name] = reader.sensor_type
+            print(f"  Started {name} reader ({args.mode} mode, port={args.mmwave_port})")
         else:
             reader = cls(mode=args.mode)
             reader.start()
