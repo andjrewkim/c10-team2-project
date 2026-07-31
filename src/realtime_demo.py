@@ -1027,6 +1027,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         else:
                             display_text = "TWO-ARM-BOXING"
                             displayed = "two-arm-boxing"
+                        print(f"[{time.strftime('%H:%M:%S')}] {displayed.upper().replace('-', ' ')}")
                         boxing_type_locked = displayed  # lock this boxing type
                         gesture_label.config(text=display_text, fg=PALETTE["success"])
                         display_age = 0
@@ -1223,6 +1224,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                                 display_upper = smoothed.upper()
                                 gesture_label.config(text=display_upper, fg=PALETTE["warn"])
                                 displayed = smoothed
+                                print(f"[{time.strftime('%H:%M:%S')}] {smoothed.upper().replace('-', ' ')}")
                                 display_age = 0
                                 challenge_count = 0
                                 challenge_label = None
@@ -1238,6 +1240,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             display_upper = smoothed.upper()
                             gesture_label.config(text=display_upper, fg="#ffffff")
                             displayed = smoothed
+                            print(f"[{time.strftime('%H:%M:%S')}] {smoothed.upper().replace('-', ' ')}")
                             display_age = 0
                             challenge_count = 0
                             challenge_label = None
@@ -1383,7 +1386,13 @@ def main() -> None:
     for item in args.gesture_conf:
         if "=" in item:
             gesture, threshold = item.split("=", 1)
-            gesture_conf_overrides[gesture.strip().lower()] = float(threshold.strip())
+            gesture = gesture.strip().lower()
+            threshold = threshold.strip()
+            try:
+                gesture_conf_overrides[gesture] = float(threshold)
+            except ValueError:
+                print(f"  ⚠ Warning: ignoring malformed --gesture-conf entry '{item}' — "
+                      f"'{threshold}' is not a valid number")
         else:
             print(f"  ⚠ Warning: ignoring malformed --gesture-conf entry '{item}' (expected gesture=threshold)")
 
@@ -1391,7 +1400,13 @@ def main() -> None:
     for item in args.gesture_min_movement:
         if "=" in item:
             gesture, threshold = item.split("=", 1)
-            gesture_movement_overrides[gesture.strip().lower()] = float(threshold.strip())
+            gesture = gesture.strip().lower()
+            threshold = threshold.strip()
+            try:
+                gesture_movement_overrides[gesture] = float(threshold)
+            except ValueError:
+                print(f"  ⚠ Warning: ignoring malformed --gesture-min-movement entry '{item}' — "
+                      f"'{threshold}' is not a valid number")
         else:
             print(f"  ⚠ Warning: ignoring malformed --gesture-min-movement entry '{item}' (expected gesture=threshold)")
 
