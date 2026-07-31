@@ -343,6 +343,90 @@ def _check_feature_dims(n_computed: int, n_expected: int, sensor_names: list[str
     )
 
 
+def _check_sustained_oscillation(
+    readings: list,
+    min_crossings: int = 3,
+    min_channels: int = 3,
+) -> tuple[bool, float]:
+    """Detect sustained multi-cycle oscillation in the raw IMU signal.
+
+    Repetitive gestures (making-fist-open, clapping) produce a DISTINCTIVE
+    pattern in the raw IMU: the signal oscillates back and forth over
+    multiple cycles. Transient gestures (push, pull, left, right) produce
+    a single spike that decays — no sustained oscillation.
+
+    The check works across all 6 IMU channels (ax, ay, az, gx, gy, gz) and
+    counts how many show **multiple zero crossings** at significant amplitude.
+    This catches the physical reality: making a fist repeatedly means the
+    hand opens and closes, which repeatedly reverses the acceleration and
+    rotation direction.
+
+    The ``min_crossings`` threshold controls per-channel sensitivity.
+    3 crossings means the signal must reverse direction at least 3 times
+    within the window — that's ~1.5+ full cycles, impossible for a single
+    push/pull/left/right but routine for fist open/close. Lower to 2 for
+    more sensitivity.
+
+    ``min_channels`` controls how many of the 6 IMU channels need to
+    oscillate. 3 = half the channels, catching the fact that fist
+    open/close involves both linear acceleration and rotation.
+
+    Args:
+        readings: List of IMU sensor readings from the current window.
+        min_crossings: Minimum zero crossings per channel to count as
+                       oscillating (default: 3 ≈ 1.5+ cycles).
+        min_channels: Minimum channels that must show oscillation
+                      (default: 3 of 6).
+
+    Returns:
+        ``(is_oscillating, channel_fraction)``.
+        ``is_oscillating`` is True when enough IMU channels show
+        sustained oscillation.
+        ``channel_fraction`` is the fraction (0-1) of channels that
+        oscillated (useful for debugging or meters).
+    """
+    if len(readings) < 6:
+        return False, 0.0
+
+    n = len(readings)
+    signal = np.zeros((n, 6))
+
+    for i, r in enumerate(readings):
+        accel = r.data.get("accel", [0, 0, 0])
+        gyro = r.data.get("gyro", [0, 0, 0])
+        signal[i, 0] = float(accel[0]) * _accel_gain if len(accel) > 0 else 0.0
+        signal[i, 1] = float(accel[1]) * _accel_gain if len(accel) > 1 else 0.0
+        signal[i, 2] = float(accel[2]) * _accel_gain if len(accel) > 2 else 0.0
+        gx = float(gyro[0]) * _gyro_gain if len(gyro) > 0 else 0.0
+        gy = float(gyro[1]) * _gyro_gain if len(gyro) > 1 else 0.0
+        gz = float(gyro[2]) * _gyro_gain if len(gyro) > 2 else 0.0
+        signal[i, 3] = gx if abs(gx) >= _gyro_deadband else 0.0
+        signal[i, 4] = gy if abs(gy) >= _gyro_deadband else 0.0
+        signal[i, 5] = gz if abs(gz) >= _gyro_deadband else 0.0
+
+    oscillating = 0
+    for c in range(6):
+        col = signal[:, c]
+        rms = float(np.sqrt(np.mean(col ** 2)))
+
+        # Different thresholds for accel (m/s²) vs gyro (dps)
+        min_rms = 0.3 if c < 3 else 0.5
+        if rms < min_rms:
+            continue
+
+        # Count zero crossings — each crossing means a direction reversal
+        centered = col - np.mean(col)
+        crossings = int(np.sum((centered[:-1] * centered[1:]) < 0))
+
+        # 3+ crossings = 1.5+ cycles = sustained oscillation
+        # 0-1 crossings = transient signal (push, pull, etc.)
+        if crossings >= min_crossings:
+            oscillating += 1
+
+    fraction = oscillating / 6.0
+    return oscillating >= min_channels, fraction
+
+
 def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sensor_types,
                  gesture_conf_overrides: dict[str, float] | None = None,
                  gesture_movement_overrides: dict[str, float] | None = None):
@@ -361,8 +445,18 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     movement_history: deque[float] = deque(maxlen=3)
     min_display_frames = 5
     display_age = 0
+    # Observation mode state (boxing type discrimination)
+    observe_until: int | None = None
+    punch_count = 0
+    prev_accel: list[float] | None = None
+    was_in_punch = False
+    punch_cooldown = 0
+    boxing_type_locked: str | None = None  # once set, other boxing type can't replace
     # Cooldown after idle clear — prevents flash of stale predictions
     idle_cooldown = 0
+    # Oscillation persistence counter — requires ~2 seconds of sustained
+    # oscillation before overriding the prediction. Resets if oscillation stops.
+    osc_persistence = 0
 
     # Reset gravity-tracking HPF for a fresh session
     global _accel_lp
@@ -380,6 +474,16 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
 
             if len(window) < args.window:
                 continue
+
+            current_accel: list[float] | None = None
+            for name, stype in sensor_types.items():
+                if stype == "imu" and name in frame_data:
+                    reading = frame_data[name]
+                    if reading and reading.data:
+                        accel = reading.data.get("accel", None)
+                        if accel is not None:
+                            current_accel = list(map(float, accel))
+                            break
 
             raw_movement = 0.0
             features = []
@@ -406,6 +510,48 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                 if imu_readings and _check_gyro_oscillation(imu_readings):
                     is_idle = False
 
+            # ── boxing observation: count punches, determine type ──
+            if observe_until is not None and current_accel is not None and prev_accel is not None:
+                delta = sum(abs(current_accel[i] - prev_accel[i]) for i in range(3))
+                in_punch = delta > args.punch_threshold
+                if args.debug:
+                    print(f"  [obs] punch={punch_count}, delta={delta:.3f} (th={args.punch_threshold}){' ⚡' if in_punch else ''}")
+                if punch_cooldown > 0:
+                    punch_cooldown -= 1
+                elif in_punch and not was_in_punch:
+                    punch_count += 1
+                    punch_cooldown = args.punch_cooldown
+                    was_in_punch = in_punch
+
+            if current_accel is not None:
+                prev_accel = current_accel[:]
+
+            if observe_until is not None:
+                if frame_count >= observe_until:
+                    if punch_count >= 2:
+                        displayed = "one-arm-boxing"
+                        print("> one-arm-boxing")
+                    else:
+                        displayed = "two-arm-boxing"
+                        print("> two-arm-boxing")
+                    boxing_type_locked = displayed  # lock this boxing type
+                    display_age = 0
+                    challenge_count = 0
+                    challenge_label = None
+                    hold_counter = max_hold_frames
+                    # reset observation state
+                    observe_until = None
+                    punch_count = 0
+                    was_in_punch = False
+                    punch_cooldown = 0
+                    time.sleep(0.02)
+                    continue
+                else:
+                    if args.debug:
+                        print(f"  [obs] awaiting — punch={punch_count}")
+                    time.sleep(0.02)
+                    continue
+
             # ── idle ──
             if is_idle:
                 if displayed is not None:
@@ -419,11 +565,25 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                         movement_history.clear()
                         challenge_count = 0
                         challenge_label = None
+                        observe_until = None
+                        punch_count = 0
+                        prev_accel = None
+                        was_in_punch = False
+                        punch_cooldown = 0
+                        boxing_type_locked = None
+                        osc_persistence = 0
                         idle_cooldown = 15  # suppress predictions briefly to prevent flash
                 else:
                     smooth_buffer.clear()
                     challenge_count = 0
                     challenge_label = None
+                    observe_until = None
+                    punch_count = 0
+                    prev_accel = None
+                    was_in_punch = False
+                    punch_cooldown = 0
+                    boxing_type_locked = None
+                    osc_persistence = 0
                 continue
 
             # hold_counter is set to max_hold_frames when a new gesture is displayed
@@ -443,12 +603,40 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                     time.sleep(0.02)
                     continue
 
-            try:
-                label, conf = _predict(pipeline, gestures, features)
-            except Exception as e:
-                print(f"  ⚠ Prediction error: {e}")
-                time.sleep(0.02)
-                continue
+            # ── sustained oscillation detection (signal-based) ──
+            # Check the raw IMU signal for multi-cycle oscillation.
+            # Requires ~2 seconds of sustained oscillation before overriding
+            # the model — prevents false positives from brief wrist jitter.
+            imu_readings = _gather_readings(window, "imu")
+            sustained_osc, osc_frac = False, 0.0
+            if imu_readings and len(imu_readings) >= 6:
+                sustained_osc, osc_frac = _check_sustained_oscillation(
+                    imu_readings,
+                    args.oscillation_min_crossings,
+                    args.oscillation_min_channels,
+                )
+
+            # Track persistence: oscillation must hold for ~2 seconds
+            if sustained_osc:
+                osc_persistence += 1
+            else:
+                osc_persistence = 0
+
+            # ── oscillation sustained long enough: skip model call ──
+            if osc_persistence >= args.oscillation_min_frames:
+                label = args.oscillation_gesture
+                conf = 0.95
+                if args.debug:
+                    print(f"  [osc] {osc_persistence}f sustained → {label}")
+            else:
+                if sustained_osc and args.debug:
+                    print(f"  [osc] accumulating ({osc_persistence}/{args.oscillation_min_frames})...")
+                try:
+                    label, conf = _predict(pipeline, gestures, features)
+                except Exception as e:
+                    print(f"  ⚠ Prediction error: {e}")
+                    time.sleep(0.02)
+                    continue
 
             # ── per-gesture confidence threshold ──────────────────
             min_conf = gesture_conf_overrides.get(label, args.min_conf)
@@ -485,12 +673,39 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                     challenge_count = 1
 
                 if challenge_count >= args.change_frames:
-                    print(f"> {smoothed}  (conf={conf:.2f})")
-                    displayed = smoothed
-                    display_age = 0
-                    challenge_count = 0
-                    challenge_label = None
-                    hold_counter = max_hold_frames
+                    # ── boxing type lock ─────────────────────────────
+                    # Once the observation determines one-arm or two-arm,
+                    # the other boxing type can't replace it until idle.
+                    if smoothed in ("one-arm-boxing", "two-arm-boxing") and smoothed != boxing_type_locked and boxing_type_locked is not None:
+                        if args.debug:
+                            print(f"  [lock] {smoothed} ignored — {boxing_type_locked} is locked")
+                        challenge_count = 0
+                        challenge_label = None
+                        continue
+                    if smoothed in ("one-arm-boxing", "two-arm-boxing"):
+                        if movement < args.min_boxing_movement:
+                            if args.debug:
+                                print(f"  ⚠ ignoring boxing — low movement ({movement:.3f} < {args.min_boxing_movement})")
+                            # Fall through: show the model's prediction anyway
+                            print(f"> {smoothed}  (conf={conf:.2f}, low mvmt)")
+                            displayed = smoothed
+                            display_age = 0
+                            challenge_count = 0
+                            challenge_label = None
+                            hold_counter = max_hold_frames
+                        else:
+                            observe_until = frame_count + args.boxing_delay_frames
+                            punch_count = 0
+                            was_in_punch = False
+                            punch_cooldown = 0
+                            print(f"  observing for punches ({args.boxing_delay_frames} frames)...")
+                    else:
+                        print(f"> {smoothed}  (conf={conf:.2f})")
+                        displayed = smoothed
+                        display_age = 0
+                        challenge_count = 0
+                        challenge_label = None
+                        hold_counter = max_hold_frames
 
             time.sleep(0.02)
     except KeyboardInterrupt:
@@ -527,13 +742,21 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     challenge_label: str | None = None
     challenge_count = 0
     running = True
-    movement_history: deque[float] = deque(maxlen=3)
+    movement_history: deque[float] = deque(maxlen=5)
     hold_counter = 0
     max_hold_frames = 8
     min_display_frames = 5
     display_age = 0
     dims_warned = False
+    # Observation mode state (boxing type discrimination)
+    observe_until: int | None = None
+    punch_count = 0
+    prev_accel: list[float] | None = None
+    was_in_punch = False
+    punch_cooldown = 0
+    boxing_type_locked: str | None = None  # once set, other boxing type can't replace
     idle_cooldown = 0  # suppresses predictions briefly after idle clears
+    osc_persistence = 0  # frames of sustained oscillation (requires ~2s to override)
     active_start: float | None = None
     total_active_time = 0.0
     fps_samples: deque[float] = deque(maxlen=60)
@@ -687,8 +910,9 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
         nonlocal running, frame_count, displayed, challenge_label, challenge_count
         nonlocal hold_counter, movement_history, display_age, dims_warned, last_movement
 
-        nonlocal idle_cooldown, active_start, total_active_time
+        nonlocal idle_cooldown, active_start, total_active_time, osc_persistence
         nonlocal fps_samples, last_fps_time, idle_start
+        nonlocal observe_until, punch_count, prev_accel, was_in_punch, punch_cooldown, boxing_type_locked
 
         if not running:
             return
@@ -716,6 +940,17 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
             stats_labels["fps"].config(text=f"fps  {fps:.1f}")
 
             if len(window) >= args.window:
+                # ── gather IMU data for boxing detection ─────────
+                current_accel: list[float] | None = None
+                for name, stype in sensor_types.items():
+                    if stype == "imu" and name in frame_data:
+                        reading = frame_data[name]
+                        if reading and reading.data:
+                            accel = reading.data.get("accel", None)
+                            if accel is not None:
+                                current_accel = list(map(float, accel))
+                                break
+
                 # ── compute features ────────────────────────────────
                 raw_movement = 0.0
                 features = []
@@ -744,6 +979,48 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     imu_readings = _gather_readings(window, "imu")
                     if imu_readings and _check_gyro_oscillation(imu_readings):
                         is_idle = False
+
+                # ── boxing observation: count punches, determine type ──
+                if observe_until is not None and current_accel is not None and prev_accel is not None:
+                    delta = sum(abs(current_accel[i] - prev_accel[i]) for i in range(3))
+                    in_punch = delta > args.punch_threshold
+                    if punch_cooldown > 0:
+                        punch_cooldown -= 1
+                    elif in_punch and not was_in_punch:
+                        punch_count += 1
+                        punch_cooldown = args.punch_cooldown
+                    was_in_punch = in_punch
+
+                if current_accel is not None:
+                    prev_accel = current_accel[:]
+
+                if observe_until is not None:
+                    if frame_count >= observe_until:
+                        if punch_count >= 2:
+                            display_text = "ONE-ARM-BOXING"
+                            displayed = "one-arm-boxing"
+                        else:
+                            display_text = "TWO-ARM-BOXING"
+                            displayed = "two-arm-boxing"
+                        boxing_type_locked = displayed  # lock this boxing type
+                        gesture_label.config(text=display_text, fg=PALETTE["success"])
+                        display_age = 0
+                        challenge_count = 0
+                        challenge_label = None
+                        hold_counter = max_hold_frames
+                        error_label.config(text="")
+                        # reset observation state
+                        observe_until = None
+                        punch_count = 0
+                        was_in_punch = False
+                        punch_cooldown = 0
+                        root.after(25, poll)
+                        return
+                    else:
+                        gesture_label.config(fg=PALETTE["warn"])
+                        error_label.config(text=f"observing... {punch_count} punches", fg=PALETTE["fg_dim"])
+                        root.after(25, poll)
+                        return
 
                 # ── idle / active tracking ───────────────────────────
                 if is_idle:
@@ -786,12 +1063,26 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             movement_history.clear()
                             challenge_count = 0
                             challenge_label = None
+                            observe_until = None
+                            punch_count = 0
+                            prev_accel = None
+                            was_in_punch = False
+                            punch_cooldown = 0
+                            boxing_type_locked = None
+                            osc_persistence = 0
                             idle_cooldown = 15  # suppress predictions briefly to prevent flash
                             error_label.config(text="")
                     else:
                         smooth_buffer.clear()
                         challenge_count = 0
                         challenge_label = None
+                        observe_until = None
+                        punch_count = 0
+                        prev_accel = None
+                        was_in_punch = False
+                        punch_cooldown = 0
+                        boxing_type_locked = None
+                        osc_persistence = 0
                     root.after(25, poll)
                     return
 
@@ -811,13 +1102,38 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         root.after(25, poll)
                         return
 
-                # ── predict ──────────────────────────────────────────
-                try:
-                    label, conf = _predict(pipeline, gestures, features)
-                except Exception as e:
-                    error_label.config(text=f"⚠ prediction error: {e}", fg=PALETTE["warn"])
-                    root.after(30, poll)
-                    return
+                # ── sustained oscillation detection (signal-based) ──
+                # Check the raw IMU signal for multi-cycle oscillation.
+                imu_readings = _gather_readings(window, "imu")
+                sustained_osc, osc_frac = False, 0.0
+                if imu_readings and len(imu_readings) >= 6:
+                    sustained_osc, osc_frac = _check_sustained_oscillation(
+                        imu_readings,
+                        args.oscillation_min_crossings,
+                        args.oscillation_min_channels,
+                    )
+
+                # Track persistence: oscillation must hold for ~2 seconds
+                if sustained_osc:
+                    osc_persistence += 1
+                else:
+                    osc_persistence = 0
+
+                # ── oscillation sustained long enough: skip model ────
+                if osc_persistence >= args.oscillation_min_frames:
+                    label = args.oscillation_gesture
+                    conf = 0.95
+                    if args.debug:
+                        print(f"  [osc] {osc_persistence}f sustained → {label}")
+                else:
+                    if sustained_osc and args.debug:
+                        print(f"  [osc] accumulating ({osc_persistence}/{args.oscillation_min_frames})...")
+                    try:
+                        label, conf = _predict(pipeline, gestures, features)
+                    except Exception as e:
+                        error_label.config(text=f"⚠ prediction error: {e}", fg=PALETTE["warn"])
+                        root.after(30, poll)
+                        return
 
                 # ── per-gesture confidence threshold ─────────────────
                 min_conf = gesture_conf_overrides.get(label, args.min_conf)
@@ -847,14 +1163,40 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         challenge_count = 1
 
                     if challenge_count >= args.change_frames:
-                        display_upper = smoothed.upper()
-                        gesture_label.config(text=display_upper, fg="#ffffff")
-                        displayed = smoothed
-                        display_age = 0
-                        challenge_count = 0
-                        challenge_label = None
-                        hold_counter = max_hold_frames
-                        error_label.config(text="")
+                        # ── boxing type lock ─────────────────────────
+                        # Once the observation determines one-arm or two-arm,
+                        # the other boxing type can't replace it until idle.
+                        if smoothed in ("one-arm-boxing", "two-arm-boxing") and smoothed != boxing_type_locked and boxing_type_locked is not None:
+                            challenge_count = 0
+                            challenge_label = None
+                            root.after(25, poll)
+                            return
+                        if smoothed in ("one-arm-boxing", "two-arm-boxing"):
+                            if movement < args.min_boxing_movement:
+                                error_label.config(text=f"{smoothed} (low movement: {movement:.2f})", fg=PALETTE["warn"])
+                                display_upper = smoothed.upper()
+                                gesture_label.config(text=display_upper, fg=PALETTE["warn"])
+                                displayed = smoothed
+                                display_age = 0
+                                challenge_count = 0
+                                challenge_label = None
+                                hold_counter = max_hold_frames
+                            else:
+                                observe_until = frame_count + args.boxing_delay_frames
+                                punch_count = 0
+                                was_in_punch = False
+                                punch_cooldown = 0
+                                gesture_label.config(fg=PALETTE["warn"])
+                                error_label.config(text=f"observing for punches ({args.boxing_delay_frames} frames)...", fg=PALETTE["fg_dim"])
+                        else:
+                            display_upper = smoothed.upper()
+                            gesture_label.config(text=display_upper, fg="#ffffff")
+                            displayed = smoothed
+                            display_age = 0
+                            challenge_count = 0
+                            challenge_label = None
+                            hold_counter = max_hold_frames
+                            error_label.config(text="")
 
             # ── update stats bar sensor info ─────────────────────────
             stats_labels["sensor"].config(text=f"sensor  {', '.join(args.sensors)}")
@@ -964,6 +1306,19 @@ def main() -> None:
     parser.add_argument("--gesture-min-movement", nargs="+", default=[],
                         help="Per-gesture minimum movement: gesture=threshold (e.g. push=0.15 soli=0.2). "
                              "Require more movement for specific gestures to be accepted.")
+    parser.add_argument("--oscillation-gesture", default="making-fist-open",
+                        help="Gesture to display when the raw IMU signal shows sustained "
+                             "multi-cycle oscillation (default: making-fist-open). "
+                             "Repetitive gestures produce this signature; transient ones don't.")
+    parser.add_argument("--oscillation-min-crossings", type=int, default=3,
+                        help="Minimum zero-crossings per IMU channel to count as oscillating "
+                             "(default: 3 = ~1.5+ cycles). Lower to 2 for more sensitivity.")
+    parser.add_argument("--oscillation-min-channels", type=int, default=3,
+                        help="Minimum IMU channels (of 6: ax,ay,az,gx,gy,gz) that must show "
+                             "sustained oscillation (default: 3 = half the channels)")
+    parser.add_argument("--oscillation-min-frames", type=int, default=40,
+                        help="Minimum consecutive frames of oscillation before overriding the "
+                             "prediction ~1 second at 40fps (default: 40)")
     parser.add_argument("--debug", action="store_true",
                         help="Print per-frame predictions")
     parser.add_argument("--imu-port", default=None,
@@ -997,6 +1352,12 @@ def main() -> None:
         if gesture_movement_overrides:
             items = ", ".join(f"{k}={v}" for k, v in sorted(gesture_movement_overrides.items()))
             print(f"  Min movement: {items}")
+
+    # Show oscillation detection config
+    print(f"Oscillation override: {args.oscillation_gesture} "
+          f"(min {args.oscillation_min_crossings} crossings, "
+          f"min {args.oscillation_min_channels}/6 channels, "
+          f"require {args.oscillation_min_frames} consecutive frames)")
 
     model_path = Path(args.model)
     if not model_path.exists():
