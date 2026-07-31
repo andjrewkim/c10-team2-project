@@ -622,12 +622,37 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
             else:
                 osc_persistence = 0
 
-            # ── oscillation sustained long enough: skip model call ──
+            # ── oscillation sustained — check displayed gesture first ──
+            # By the time oscillation has persisted for ~1s, the model may no
+            # longer confidently predict the original gesture (the window now
+            # contains the oscillating signal). Check what's ALREADY displayed
+            # — if it's a blocked gesture, don't override it.
             if osc_persistence >= args.oscillation_min_frames:
-                label = args.oscillation_gesture
-                conf = 0.95
-                if args.debug:
-                    print(f"  [osc] {osc_persistence}f sustained → {label}")
+                if displayed in args.oscillation_block:
+                    # Already showing a blocked gesture — don't override
+                    try:
+                        label, conf = _predict(pipeline, gestures, features)
+                    except Exception as e:
+                        print(f"  ⚠ Prediction error: {e}")
+                        time.sleep(0.02)
+                        continue
+                    if args.debug:
+                        print(f"  [osc] protected — {displayed} is in blocklist")
+                else:
+                    try:
+                        model_label, model_conf = _predict(pipeline, gestures, features)
+                    except Exception as e:
+                        model_label, model_conf = None, 0.0
+                    if model_label in args.oscillation_block and model_conf >= args.min_conf:
+                        label = model_label
+                        conf = model_conf
+                        if args.debug:
+                            print(f"  [osc] blocked — {label} ({conf:.2f}) accepted")
+                    else:
+                        label = args.oscillation_gesture
+                        conf = 0.95
+                        if args.debug:
+                            print(f"  [osc] {osc_persistence}f sustained → {label}")
             else:
                 if sustained_osc and args.debug:
                     print(f"  [osc] accumulating ({osc_persistence}/{args.oscillation_min_frames})...")
@@ -1119,12 +1144,33 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                 else:
                     osc_persistence = 0
 
-                # ── oscillation sustained long enough: skip model ────
+                # ── oscillation sustained — check displayed gesture first ──
                 if osc_persistence >= args.oscillation_min_frames:
-                    label = args.oscillation_gesture
-                    conf = 0.95
-                    if args.debug:
-                        print(f"  [osc] {osc_persistence}f sustained → {label}")
+                    if displayed in args.oscillation_block:
+                        # Already showing a blocked gesture — don't override
+                        try:
+                            label, conf = _predict(pipeline, gestures, features)
+                        except Exception as e:
+                            error_label.config(text=f"⚠ prediction error: {e}", fg=PALETTE["warn"])
+                            root.after(30, poll)
+                            return
+                        if args.debug:
+                            print(f"  [osc] protected — {displayed} is in blocklist")
+                    else:
+                        try:
+                            model_label, model_conf = _predict(pipeline, gestures, features)
+                        except Exception as e:
+                            model_label, model_conf = None, 0.0
+                        if model_label in args.oscillation_block and model_conf >= args.min_conf:
+                            label = model_label
+                            conf = model_conf
+                            if args.debug:
+                                print(f"  [osc] blocked — {label} ({conf:.2f}) accepted")
+                        else:
+                            label = args.oscillation_gesture
+                            conf = 0.95
+                            if args.debug:
+                                print(f"  [osc] {osc_persistence}f sustained → {label}")
                 else:
                     if sustained_osc and args.debug:
                         print(f"  [osc] accumulating ({osc_persistence}/{args.oscillation_min_frames})...")
@@ -1319,6 +1365,11 @@ def main() -> None:
     parser.add_argument("--oscillation-min-frames", type=int, default=40,
                         help="Minimum consecutive frames of oscillation before overriding the "
                              "prediction ~1 second at 40fps (default: 40)")
+    parser.add_argument("--oscillation-block", nargs="+", default=["bye-bye", "clapping"],
+                        help="Gesture labels that should NOT be overridden by oscillation "
+                             "detection. These gestures (e.g., bye-bye, clapping, wave) also "
+                             "produce oscillation but should keep their model-predicted label "
+                             "(default: bye-bye clapping)")
     parser.add_argument("--debug", action="store_true",
                         help="Print per-frame predictions")
     parser.add_argument("--imu-port", default=None,
