@@ -96,12 +96,16 @@ class MmWaveRadarSensor(BaseSensor):
         sensor_id: str,
         serial_port: str = "/dev/ttyUSB0",
         baudrate_data: int = 115200,
+        cli_port: str | None = None,
+        cli_baudrate: int = 115200,
         mode: str = "mock",
         cfg_path: str | None = None,
     ) -> None:
         super().__init__(sensor_id=sensor_id, sensor_type="mmwave")
         self.serial_port = serial_port
         self.baudrate_data = baudrate_data
+        self.cli_port = cli_port  # separate CLI port (IWR6843 dual-UART), None = use data port
+        self.cli_baudrate = cli_baudrate
         self.mode = mode
         self.cfg_path = cfg_path
 
@@ -137,41 +141,94 @@ class MmWaveRadarSensor(BaseSensor):
 
         with self._lock:
             t0 = time.monotonic()
-            log.info(f"Opening {self.serial_port} @ {self.baudrate_data} baud")
-            self._port = pyserial.Serial(
-                self.serial_port, baudrate=self.baudrate_data, timeout=0.3
-            )
-            time.sleep(0.2)
-            self._port.reset_input_buffer()
 
-            if self.cfg_path:
-                log.info(f"Configuring radar with {self.cfg_path}")
-                try:
-                    configure_radar(self._port, self.cfg_path)
-                except Exception as exc:
-                    log.error(f"Configuration failed: {exc}")
-                    self._port.close()
-                    self._port = None
-                    raise
+            # Determine which port to use for configuration
+            # IWR6843 has separate CLI+data UARTs; IWRL6432 uses a single UART
+            use_cli_port = self.cli_port and self.cli_port != self.serial_port
+
+            if use_cli_port:
+                # Open CLI port for configuration, then close it
+                log.info(f"Opening CLI port {self.cli_port} @ {self.cli_baudrate} baud")
+                cfg_port = pyserial.Serial(
+                    self.cli_port, baudrate=self.cli_baudrate, timeout=0.3
+                )
+                time.sleep(0.2)
+                cfg_port.reset_input_buffer()
+
+                if self.cfg_path:
+                    log.info(f"Configuring radar via CLI port {self.cli_port}")
+                    try:
+                        configure_radar(cfg_port, self.cfg_path)
+                    except Exception as exc:
+                        log.error(f"Configuration failed: {exc}")
+                        cfg_port.close()
+                        raise
+                    finally:
+                        cfg_port.close()
+                else:
+                    from src.sensors.mmWave.lab_mmwave import write_cli_command
+                    write_cli_command(cfg_port, "sensorStop 0")
+                    time.sleep(0.1)
+                    cfg_port.reset_input_buffer()
+                    commands = [
+                        "channelCfg 7 3 0",
+                        "chirpComnCfg 8 0 0 256 4 24.3 3",
+                        "chirpTimingCfg 28 37 0 160 58",
+                        "frameCfg 64 0 4000 1 100 0",
+                        "guiMonitor 2 0 0 0 0 0 0 0 0 0 0",
+                        "sigProcChainCfg 16 2 1 0 0 0 0 0",
+                    ]
+                    for cmd in commands:
+                        write_cli_command(cfg_port, cmd)
+                        time.sleep(0.05)
+                    cfg_port.reset_input_buffer()
+                    write_cli_command(cfg_port, "sensorStart 0 0 0 0")
+                    cfg_port.close()
+
+                # Now open the data port for streaming
+                log.info(f"Opening data port {self.serial_port} @ {self.baudrate_data} baud")
+                self._port = pyserial.Serial(
+                    self.serial_port, baudrate=self.baudrate_data, timeout=0.3
+                )
+                time.sleep(0.2)
+                self._port.reset_input_buffer()
             else:
-                # Minimal config
-                from src.sensors.mmWave.lab_mmwave import write_cli_command
-                write_cli_command(self._port, "sensorStop 0")
-                time.sleep(0.1)
+                # Single UART — use same port for CLI + data
+                log.info(f"Opening {self.serial_port} @ {self.baudrate_data} baud")
+                self._port = pyserial.Serial(
+                    self.serial_port, baudrate=self.baudrate_data, timeout=0.3
+                )
+                time.sleep(0.2)
                 self._port.reset_input_buffer()
-                commands = [
-                    "channelCfg 7 3 0",
-                    "chirpComnCfg 8 0 0 256 4 24.3 3",
-                    "chirpTimingCfg 28 37 0 160 58",
-                    "frameCfg 64 0 4000 1 100 0",
-                    "guiMonitor 2 0 0 0 0 0 0 0 0 0 0",
-                    "sigProcChainCfg 16 2 1 0 0 0 0 0",
-                ]
-                for cmd in commands:
-                    write_cli_command(self._port, cmd)
-                    time.sleep(0.05)
-                self._port.reset_input_buffer()
-                write_cli_command(self._port, "sensorStart 0 0 0 0")
+
+                if self.cfg_path:
+                    log.info(f"Configuring radar with {self.cfg_path}")
+                    try:
+                        configure_radar(self._port, self.cfg_path)
+                    except Exception as exc:
+                        log.error(f"Configuration failed: {exc}")
+                        self._port.close()
+                        self._port = None
+                        raise
+                else:
+                    # Minimal config
+                    from src.sensors.mmWave.lab_mmwave import write_cli_command
+                    write_cli_command(self._port, "sensorStop 0")
+                    time.sleep(0.1)
+                    self._port.reset_input_buffer()
+                    commands = [
+                        "channelCfg 7 3 0",
+                        "chirpComnCfg 8 0 0 256 4 24.3 3",
+                        "chirpTimingCfg 28 37 0 160 58",
+                        "frameCfg 64 0 4000 1 100 0",
+                        "guiMonitor 2 0 0 0 0 0 0 0 0 0 0",
+                        "sigProcChainCfg 16 2 1 0 0 0 0 0",
+                    ]
+                    for cmd in commands:
+                        write_cli_command(self._port, cmd)
+                        time.sleep(0.05)
+                    self._port.reset_input_buffer()
+                    write_cli_command(self._port, "sensorStart 0 0 0 0")
 
             self._bg_subtractor = ExponentialBackgroundSubtractor(alpha=0.1, init_frames=20)
             self._frame_count = 0

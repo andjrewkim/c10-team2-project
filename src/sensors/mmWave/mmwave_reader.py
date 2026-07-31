@@ -10,6 +10,9 @@ class MmWaveReader(BaseReader):
         sensor_id: str = "mmwave-0",
         mode: str = "mock",
         serial_port: str = "/dev/cu.usbserial-BH00LUQT",
+        baudrate: int = 115200,
+        cli_port: str | None = None,
+        cli_baudrate: int = 115200,
         cfg_path: str = "config/point_cloud.cfg",
     ):
         super().__init__(sensor_id=sensor_id, sensor_type="mmwave")
@@ -17,6 +20,9 @@ class MmWaveReader(BaseReader):
             sensor_id=sensor_id,
             mode=mode,
             serial_port=serial_port,
+            baudrate_data=baudrate,
+            cli_port=cli_port,
+            cli_baudrate=cli_baudrate,
             cfg_path=cfg_path,
         )
         self._started = False

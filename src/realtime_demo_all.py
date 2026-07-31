@@ -286,7 +286,13 @@ def _check_feature_dims(n_computed: int, n_expected: int, sensor_names: list[str
     )
 
 
-def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sensor_types):
+def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sensor_types,
+                 gesture_conf_overrides: dict[str, float] | None = None,
+                 gesture_movement_overrides: dict[str, float] | None = None):
+    if gesture_conf_overrides is None:
+        gesture_conf_overrides = {}
+    if gesture_movement_overrides is None:
+        gesture_movement_overrides = {}
     frame_buffer = deque(maxlen=args.window)
     smooth_buffer: deque[str] = deque(maxlen=args.smooth)
     frame_count = 0
@@ -420,8 +426,21 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                 print(f"  ⚠ Prediction error: {e}")
                 time.sleep(0.02)
                 continue
-            if conf < args.min_conf:
+
+            # ── per-gesture confidence threshold ──────────────────
+            min_conf = gesture_conf_overrides.get(label, args.min_conf)
+            if conf < min_conf:
+                if args.debug:
+                    print(f"  [filter] {label} conf={conf:.3f} < {min_conf:.3f}")
                 continue
+
+            # ── per-gesture minimum movement ──────────────────────
+            min_movement = gesture_movement_overrides.get(label, 0.0)
+            if movement < min_movement:
+                if args.debug:
+                    print(f"  [filter] {label} movement={movement:.3f} < {min_movement:.3f}")
+                continue
+
             smooth_buffer.append(label)
 
             if len(smooth_buffer) >= args.min_vote:
@@ -477,7 +496,13 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     print(f"Frames: {frame_count}")
 
 
-def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_types):
+def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_types,
+             gesture_conf_overrides: dict[str, float] | None = None,
+             gesture_movement_overrides: dict[str, float] | None = None):
+    if gesture_conf_overrides is None:
+        gesture_conf_overrides = {}
+    if gesture_movement_overrides is None:
+        gesture_movement_overrides = {}
     """Clean realtime GUI — resizable, fullscreen, no-nonsense."""
     try:
         import tkinter as tk
@@ -826,7 +851,12 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     root.after(30, poll)
                     return
 
-                if conf >= args.min_conf:
+                # ── per-gesture confidence threshold ─────────────────
+                min_conf = gesture_conf_overrides.get(label, args.min_conf)
+                # ── per-gesture minimum movement ───────────────────
+                min_movement = gesture_movement_overrides.get(label, 0.0)
+
+                if conf >= min_conf and movement >= min_movement:
                     smooth_buffer.append(label)
 
                 if len(smooth_buffer) >= args.min_vote:
@@ -947,6 +977,12 @@ def main() -> None:
                         help="Scale factor for gyro values before model (default: 0.6)")
     parser.add_argument("--gyro-deadband", type=float, default=2.0,
                         help="Gyro deadband in dps — values below this are zeroed out (default: 2.0)")
+    parser.add_argument("--gesture-conf", nargs="+", default=[],
+                        help="Per-gesture confidence thresholds: gesture=threshold (e.g. push=0.85 soli=0.9). "
+                             "Overrides --min-conf for specific gestures.")
+    parser.add_argument("--gesture-min-movement", nargs="+", default=[],
+                        help="Per-gesture minimum movement: gesture=threshold (e.g. push=0.15 soli=0.2). "
+                             "Require more movement for specific gestures to be accepted.")
     parser.add_argument("--debug", action="store_true",
                         help="Print per-frame predictions")
     parser.add_argument("--mmwave-port", default="/dev/cu.usbserial-BH00LUQT",
@@ -1064,6 +1100,32 @@ def main() -> None:
             sensor_types[name] = reader.sensor_type
             print(f"  Started {name} reader ({args.mode} mode)")
 
+    # ── Parse per-gesture overrides ─────────────────────────────────
+    gesture_conf_overrides: dict[str, float] = {}
+    for item in args.gesture_conf:
+        if "=" in item:
+            gesture, threshold = item.split("=", 1)
+            gesture_conf_overrides[gesture.strip().lower()] = float(threshold.strip())
+        else:
+            print(f"  ⚠ Warning: ignoring malformed --gesture-conf entry '{item}' (expected gesture=threshold)")
+
+    gesture_movement_overrides: dict[str, float] = {}
+    for item in args.gesture_min_movement:
+        if "=" in item:
+            gesture, threshold = item.split("=", 1)
+            gesture_movement_overrides[gesture.strip().lower()] = float(threshold.strip())
+        else:
+            print(f"  ⚠ Warning: ignoring malformed --gesture-min-movement entry '{item}' (expected gesture=threshold)")
+
+    if gesture_conf_overrides or gesture_movement_overrides:
+        print("Per-gesture overrides:")
+        if gesture_conf_overrides:
+            items = ", ".join(f"{k}={v}" for k, v in sorted(gesture_conf_overrides.items()))
+            print(f"  Confidence: {items}")
+        if gesture_movement_overrides:
+            items = ", ".join(f"{k}={v}" for k, v in sorted(gesture_movement_overrides.items()))
+            print(f"  Min movement: {items}")
+
     # Apply IMU processing params
     global _accel_gain, _gyro_gain, _gyro_deadband
     _accel_gain = args.accel_gain
@@ -1071,9 +1133,11 @@ def main() -> None:
     _gyro_deadband = args.gyro_deadband
 
     if args.gui:
-        run_gui(args, pipeline, expected_n_features, gestures_list, reader_map, sensor_types)
+        run_gui(args, pipeline, expected_n_features, gestures_list, reader_map,
+                sensor_types, gesture_conf_overrides, gesture_movement_overrides)
     else:
-        run_terminal(args, pipeline, expected_n_features, gestures_list, reader_map, sensor_types)
+        run_terminal(args, pipeline, expected_n_features, gestures_list, reader_map,
+                     sensor_types, gesture_conf_overrides, gesture_movement_overrides)
 
 
 if __name__ == "__main__":

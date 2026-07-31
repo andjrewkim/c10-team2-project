@@ -59,12 +59,14 @@ python -m src.realtime_demo \
     --sensors imu mmwave --imu-port * --mmwave-port * \
     --mode serial \
     --window 5 \
-    --idle-threshold 0.12 \
+    --idle-threshold 0.25 \
     --gyro-gain 1.0 \
     --gyro-deadband 0.8 \
     --accel-gain 1.0 \
     --min-conf 0.25 \
     --change-frames 8 --smooth 5 --min-vote 4 \
+    --gesture-conf push=0.85 soli=0.90 \
+    --gesture-min-movement push=0.15 soli=0.20 \
     --gui
 ```
 
@@ -81,8 +83,28 @@ collect → visualize → combine_datasets → extract_features → train → ev
 | `combine_datasets.py` | Merge recordings into one dataset | `data/combined/combined_*.csv` |
 | `extract_features.py` | Sliding-window feature extraction | `data/processed/features_*.npz` |
 | `train.py` | Train and compare classifiers | `models/train_*/*.pkl` |
-| `evaluate.py` | Accuracy, confusion matrix, plots | `results/figures/evaluate_*.json`, `results/figures/*.png` |
-| `realtime_demo.py` | Live terminal classification, GUI window | Terminal predictions |
+| `evaluate.py` | Accuracy, confusion matrix, plots | `results/figures/evaluate_*.json`, `results/figures/*.png` || `realtime_demo.py`        | Live terminal classification, GUI window | Terminal predictions |
+
+### Per-Gesture Thresholds
+
+When some gestures activate too easily (e.g. `push`/`pull` triggering on small
+rotations), use per-gesture overrides instead of just raising the global
+`--min-conf` or `--idle-threshold` which would affect all gestures equally.
+
+**`--gesture-conf <gesture>=<threshold>`** — require higher prediction
+confidence for specific gestures:
+```bash
+# push needs >= 85% confidence, soli >= 90%, others keep --min-conf
+--gesture-conf push=0.85 soli=0.90
+```
+
+**`--gesture-min-movement <gesture>=<threshold>`** — require a minimum
+movement score for specific gestures, preventing activation on tiny
+jitter or rotation:
+```bash
+# push needs at least 0.15 movement; boxing gestures need 0.3
+--gesture-min-movement push=0.15 pull=0.15 one-arm-boxing=0.3 two-arm-boxing=0.3
+```
 
 ## Structure
 

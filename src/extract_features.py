@@ -19,18 +19,19 @@ MM_FEATURE_NAMES = [
 def extract_mmwave_features(frame: dict) -> list[float]:
     mm = frame.get("mmwave", {})
     data = mm.get("data", {})
-    points = data.get("points", [])
-    num_points = data.get("num_points", len(points))
-    range_profile = data.get("range_profile", [])
+    points = data.get("points") or []
+    num_points_raw = data.get("num_points")
+    num_points = float(num_points_raw) if num_points_raw is not None else float(len(points))
+    range_profile = data.get("range_profile") or []
 
     if not points:
-        return [float(num_points), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        return [num_points, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     xs = np.array([p.get("x", 0) for p in points])
     ys = np.array([p.get("y", 0) for p in points])
 
     return [
-        float(num_points),
+        num_points,
         float(np.mean(xs)),
         float(np.std(xs)),
         float(np.min(xs)), # closest distance
