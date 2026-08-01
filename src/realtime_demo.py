@@ -496,12 +496,19 @@ def _push_pull_escape(readings: list) -> bool:
     return sum(1 for ch in range(3) if crossings[ch] >= 3) >= 2
 
 
-def _count_fist_cycles(readings: list, deadband_dps: float = 2.5) -> int:
-    """Open/close cycles on the strongest gyro channel of the segment.
+def _count_fist_cycles(readings: list, deadband_dps: float = 2.5,
+                       max_gap_frames: int = 6) -> int:
+    """Maximum number of CONSECUTIVE open/close cycles in the segment.
 
-    One open/close = two direction reversals above the deadband. Recomputing
-    from the frozen segment is deterministic (unlike the incremental counter,
-    whose single-frame channel lock can miss) and drives the ``× N`` display.
+    One open/close = two direction reversals above the deadband. 'Consecutive'
+    means the reversals are tightly packed — no gap longer than
+    ``max_gap_frames`` frames between them. A long slow drag (e.g. a
+    multi-second slow push/pull) that crosses the deadband occasionally can
+    accumulate crossings overall but never as a tight run, so it stays at 0-1
+    consecutive cycles; only a real, repeated open/close produces 4+. Counts on
+    the strongest gyro channel (the axis a fist rotates on). Recomputing from
+    the frozen segment is deterministic (unlike the incremental counter, whose
+    single-frame channel lock can miss) and drives the ``× N`` display.
     """
     if len(readings) < 2:
         return 0
@@ -512,15 +519,28 @@ def _count_fist_cycles(readings: list, deadband_dps: float = 2.5) -> int:
             g[i, j] = float(gyro[j]) * _gyro_gain if len(gyro) > j else 0.0
     rms = np.sqrt(np.mean(g ** 2, axis=0))
     ch = int(np.argmax(rms))
-    crossings = 0
+    # frame indices where the strongest channel flips direction across the deadband
+    idx = []
     last_sign = 0
-    for v in g[:, ch]:
+    for i, v in enumerate(g[:, ch]):
         sign = 1 if v > deadband_dps else (-1 if v < -deadband_dps else 0)
         if sign != 0:
             if last_sign != 0 and sign != last_sign:
-                crossings += 1
+                idx.append(i)
             last_sign = sign
-    return crossings // 2
+    if len(idx) < 2:
+        return 0
+    # longest run of reversals with no gap longer than max_gap_frames
+    best = 1
+    run = 1
+    for a, b in zip(idx, idx[1:]):
+        if b - a <= max_gap_frames:
+            run += 1
+            if run > best:
+                best = run
+        else:
+            run = 1
+    return best // 2
 
 
 def _repeat_label(gesture: str, count: int) -> str:
@@ -954,15 +974,15 @@ class ConfirmedGestureDetector:
         if winner != self.osc_gesture \
                 and winner not in ("one-arm-boxing", "two-arm-boxing") \
                 and winner not in self.osc_block:
-            if _fist_oscillation(readings) and self.last_fist_cycles >= 2:
+            if _fist_oscillation(readings) and self.last_fist_cycles >= 4:
                 winner = self.osc_gesture
                 self.last_override = "osc"
             # The model mislabels a repeated open/close fist as pull/push
             # (both single-impulse linear gestures). A real push/pull is one
-            # impulse (even with a hard-stop bounce); a fist repeats — so ≥3
-            # cycles + gyro oscillation on 2+ channels is a fist, not a pull.
+            # impulse (even with a hard-stop bounce); a fist repeats — so ≥4
+            # CONSECUTIVE cycles + gyro oscillation on 2+ channels is a fist.
             elif winner in ("push", "pull") \
-                    and self.last_fist_cycles >= 3 \
+                    and self.last_fist_cycles >= 4 \
                     and _push_pull_escape(readings):
                 winner = self.osc_gesture
                 self.last_override = "escape"
