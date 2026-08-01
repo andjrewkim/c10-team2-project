@@ -1136,11 +1136,11 @@ def run_confirmed_gui(args, pipeline, expected_n_features, gestures, reader_map,
         "log": "#9a9aa2",
     }
     FONTS = {
-        "big": ("Helvetica", 54, "bold"),
-        "title": ("Helvetica", 11, "bold"),
-        "mono": ("Courier", 11),
-        "mono_small": ("Courier", 10),
-        "mono_tiny": ("Courier", 9),
+        "big": ("Helvetica", 80, "bold"),
+        "title": ("Helvetica", 17, "bold"),
+        "mono": ("Courier", 17),
+        "mono_small": ("Courier", 15),
+        "mono_tiny": ("Courier", 14),
     }
 
     root = tk.Tk()
@@ -1153,7 +1153,7 @@ def run_confirmed_gui(args, pipeline, expected_n_features, gestures, reader_map,
              fg=PALETTE["accent"], bg=PALETTE["bg"]).pack(pady=(12, 0))
     tk.Label(root, text="do the gesture → stop & hold still ~1s → result appears",
              font=FONTS["mono_tiny"], fg=PALETTE["muted"], bg=PALETTE["bg"]).pack(pady=(2, 0))
-    status = tk.Label(root, text="○ waiting for a gesture…", font=("Courier", 13),
+    status = tk.Label(root, text="○ waiting for a gesture…", font=("Courier", 20),
                       fg=PALETTE["dim"], bg=PALETTE["bg"])
     status.pack(pady=(2, 0))
     gesture_label = tk.Label(root, text="—", font=FONTS["big"],
@@ -1741,9 +1741,9 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
 
     # ── fonts (plain) ───────────────────────────────────────────────
     FONTS = {
-        "mono": ("Courier", 11),
-        "mono_small": ("Courier", 10),
-        "mono_tiny": ("Courier", 9),
+        "mono": ("Courier", 17),
+        "mono_small": ("Courier", 15),
+        "mono_tiny": ("Courier", 14),
     }
 
     # ── root window ─────────────────────────────────────────────────
@@ -1769,10 +1769,10 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     top = tk.Frame(root, bg=PALETTE["bg"])
     top.pack(fill="x", padx=16, pady=(10, 2))
 
-    tk.Label(top, text="● REAL-TIME GESTURE CLASSIFIER", font=("Helvetica", 9, "bold"),
+    tk.Label(top, text="● REAL-TIME GESTURE CLASSIFIER", font=("Helvetica", 14, "bold"),
              fg=PALETTE["accent"], bg=PALETTE["bg"]).pack(side="left")
     tk.Label(top, text="v1",
-             font=("Helvetica", 8), fg=PALETTE["fg_dim"], bg=PALETTE["bg"]).pack(side="right")
+             font=("Helvetica", 12), fg=PALETTE["fg_dim"], bg=PALETTE["bg"]).pack(side="right")
 
     # thin rule
     rule = tk.Frame(root, height=1, bg=PALETTE["fg_muted"])
@@ -1792,7 +1792,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     # GESTURE PREDICTION (centred, expands)
     # ═════════════════════════════════════════════════════════════════
 
-    gesture_label = tk.Label(main, text="—", font=("Helvetica", 80, "bold"),
+    gesture_label = tk.Label(main, text="—", font=("Helvetica", 120, "bold"),
                              fg="#ffffff", bg=PALETTE["bg"])
     gesture_label.grid(row=0, column=0, sticky="nsew")
 
