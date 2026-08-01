@@ -186,10 +186,10 @@ def _check_gyro_oscillation(readings: list) -> bool:
     oscillation triggers the override — tiny wrist jitter at rest stays idle.
 
     Returns True if at least 2 of 3 gyro channels show both:
-      - Strong amplitude (RMS > 1.5 dps after deadband)
-      - Fast oscillation (zero-crossing rate > 0.30)
+      - Strong amplitude (RMS > 4.0 dps after deadband)
+      - Fast oscillation (zero-crossing rate > 0.35)
     """
-    if len(readings) < 4:
+    if len(readings) < 5:
         return False
     gyros = []
     for r in readings:
@@ -203,12 +203,12 @@ def _check_gyro_oscillation(readings: list) -> bool:
     for c in range(3):
         col = gyro_data[:, c]
         rms = float(np.sqrt(np.mean(col ** 2)))
-        if rms < 1.5:
+        if rms < 4.0:
             continue
         centered = col - np.mean(col)
         crossings = int(np.sum((centered[:-1] * centered[1:]) < 0))
         zcr = crossings / len(col) if len(col) > 0 else 0.0
-        if zcr > 0.30:
+        if zcr > 0.35:
             oscillating += 1
     return oscillating >= 2
 
@@ -427,6 +427,898 @@ def _check_sustained_oscillation(
     return oscillating >= min_channels, fraction
 
 
+def _fist_oscillation(readings: list) -> bool:
+    """Open/close fist signature on a recorded segment.
+
+    Making a fist moves the accelerometer SIDEWAYS (open/close → accel x/z
+    zero crossings) while the wrist's vertical axis stays put (NO accel-y
+    crossings), and the wrist rotation oscillates 2+ gyro channels above
+    real amplitude. Vertical arm motions (t-arm, raise-arms) and wrist
+    rolls (clockwise, anticlockwise) either cross accel-y or leave the
+    accel still; soli/finger rub has no accel crossings at all; boxing is
+    handled by the punch count; bye-bye/clapping are blocklisted. So this
+    fires only for the repeated open/close pattern.
+    """
+    if len(readings) < 6:
+        return False
+    n = len(readings)
+    sig = np.zeros((n, 6))
+    for i, r in enumerate(readings):
+        accel = r.data.get("accel", [0, 0, 0])
+        gyro = r.data.get("gyro", [0, 0, 0])
+        for j in range(3):
+            sig[i, j] = float(accel[j]) * _accel_gain if len(accel) > j else 0.0
+            sig[i, 3 + j] = float(gyro[j]) * _gyro_gain if len(gyro) > j else 0.0
+
+    crossings = [0] * 6
+    for ch in range(6):
+        centered = sig[:, ch] - np.mean(sig[:, ch])
+        deadband = 0.3 if ch < 3 else 3.0  # m/s² vs dps (breathing is too weak to repeat)
+        signs = np.sign(centered) * (np.abs(centered) > deadband)
+        prev = 0
+        for v in signs:
+            if v != 0:
+                if prev != 0 and v != prev:
+                    crossings[ch] += 1
+                prev = v
+    accel_xz = crossings[0] + crossings[2]  # sideways open/close motion
+    accel_y = crossings[1]                  # vertical arm motion
+    gyro_channels = sum(1 for ch in range(3, 6) if crossings[ch] >= 3)
+    return accel_xz >= 1 and accel_y == 0 and gyro_channels >= 2
+
+
+def _push_pull_escape(readings: list) -> bool:
+    """Rescue the pull/push mislabel.
+
+    The model often calls a repeated open/close fist 'pull' (or 'push') —
+    both are single-impulse linear gestures. A real push/pull is ONE
+    smooth impulse (at most a tiny settle bounce); a fist repeats, so 2+
+    gyro channels with several reversals above 2 dps is a fist, not a pull.
+    """
+    if len(readings) < 6:
+        return False
+    n = len(readings)
+    sig = np.zeros((n, 3))
+    for i, r in enumerate(readings):
+        gyro = r.data.get("gyro", [0, 0, 0])
+        for j in range(3):
+            sig[i, j] = float(gyro[j]) * _gyro_gain if len(gyro) > j else 0.0
+    crossings = [0] * 3
+    for ch in range(3):
+        centered = sig[:, ch] - np.mean(sig[:, ch])
+        signs = np.sign(centered) * (np.abs(centered) > 3.0)
+        prev = 0
+        for v in signs:
+            if v != 0:
+                if prev != 0 and v != prev:
+                    crossings[ch] += 1
+                prev = v
+    return sum(1 for ch in range(3) if crossings[ch] >= 3) >= 2
+
+
+def _count_fist_cycles(readings: list, deadband_dps: float = 2.5) -> int:
+    """Open/close cycles on the strongest gyro channel of the segment.
+
+    One open/close = two direction reversals above the deadband. Recomputing
+    from the frozen segment is deterministic (unlike the incremental counter,
+    whose single-frame channel lock can miss) and drives the ``× N`` display.
+    """
+    if len(readings) < 2:
+        return 0
+    g = np.zeros((len(readings), 3))
+    for i, r in enumerate(readings):
+        gyro = r.data.get("gyro", [0, 0, 0])
+        for j in range(3):
+            g[i, j] = float(gyro[j]) * _gyro_gain if len(gyro) > j else 0.0
+    rms = np.sqrt(np.mean(g ** 2, axis=0))
+    ch = int(np.argmax(rms))
+    crossings = 0
+    last_sign = 0
+    for v in g[:, ch]:
+        sign = 1 if v > deadband_dps else (-1 if v < -deadband_dps else 0)
+        if sign != 0:
+            if last_sign != 0 and sign != last_sign:
+                crossings += 1
+            last_sign = sign
+    return crossings // 2
+
+
+def _repeat_label(gesture: str, count: int) -> str:
+    """Upper-case display label with a repetition count, e.g.
+    ``one-arm-boxing`` -> ``ONE ARM BOXING  × 5`` (plain when count == 0)."""
+    name = gesture.upper().replace("-", " ")
+    if count > 0:
+        return f"{name}  × {count}"
+    return name
+
+
+class CycleCounter:
+    """Counts repetitions of oscillatory gestures (open/close fist).
+
+    One full open/close is two direction reversals, so it locks onto the
+    strongest gyro channel when oscillation starts and counts every sign
+    change (with a deadband so resting noise isn't counted). Runs while
+    oscillation is sustained; ``reset()`` clears it for the next session.
+    """
+
+    def __init__(self):
+        self.channel = -1  # locked gyro channel index (0..2), -1 = not locked
+        self.last_sign = 0
+        self.crossings = 0
+
+    def start(self, window_readings: list) -> None:
+        g = [[0.0, 0.0, 0.0] for _ in range(len(window_readings))]
+        for i, r in enumerate(window_readings):
+            gyro = r.data.get("gyro", [0, 0, 0]) if hasattr(r, "data") else [0, 0, 0]
+            g[i][0] = float(gyro[0]) if len(gyro) > 0 else 0.0
+            g[i][1] = float(gyro[1]) if len(gyro) > 1 else 0.0
+            g[i][2] = float(gyro[2]) if len(gyro) > 2 else 0.0
+        arr = np.asarray(g, dtype=float)
+        rms = np.sqrt(np.mean(arr ** 2, axis=0))
+        self.channel = int(np.argmax(rms)) if len(rms) == 3 else 0
+        self.last_sign = 0
+        self.crossings = 0
+
+    def update(self, current_gyro: list | None) -> int:
+        """Feed the current frame's gyro; returns open/close cycles so far."""
+        if self.channel < 0 or not current_gyro or len(current_gyro) <= self.channel:
+            return self.crossings // 2
+        v = float(current_gyro[self.channel])
+        sign = 1 if v > 5.0 else (-1 if v < -5.0 else 0)  # 5 dps deadband
+        if sign != 0:
+            if self.last_sign != 0 and sign != self.last_sign:
+                self.crossings += 1
+            self.last_sign = sign
+        return self.crossings // 2
+
+    def cycles(self) -> int:
+        return self.crossings // 2
+
+    def reset(self) -> None:
+        self.channel = -1
+        self.last_sign = 0
+        self.crossings = 0
+
+
+class ConfirmedGestureDetector:
+    """Buffer-then-confirm detector: decide a gesture ONLY once the user stops.
+
+    This exploits the trial structure: gestures are executed and then the user
+    stops moving. Instead of classifying every frame continuously or gating on
+    a movement "onset", it keeps a rolling buffer of the movement:
+
+        1. BUFFER     — every moving frame is appended to the segment. No onset
+                        streak is required and nothing is classified yet.
+        2. CONFIRM    — the FIRST still frame after movement FREEZES the segment
+                        forever. From then on a confirm clock counts EVERY frame
+                        — still or wobble — with no pausing and no resetting for
+                        wrist jitter. Once it fills (``confirm_seconds`` /
+                        ``confirm_frames``), the frozen segment (the movement
+                        that led up to the stop) is classified EXACTLY once.
+        3. COOLDOWN   — a brief lockout so a single stop can never emit twice.
+
+    Because the segment is frozen the instant stillness starts, post-gesture
+    wrist wobble can neither change the prediction nor restart the wait — the
+    decision is made once, from the data that led up to the stop. Extra gates
+    (confidence, tail-window vote, min/max segment length) reject random motion.
+    """
+
+    def __init__(self, args, pipeline, gestures, sensor_types, expected_n_features,
+                 gesture_conf_overrides: dict[str, float] | None = None,
+                 gesture_movement_overrides: dict[str, float] | None = None):
+        self.args = args
+        self.pipeline = pipeline
+        self.gestures = gestures
+        self.sensor_types = sensor_types
+        self.expected_n_features = expected_n_features
+        self.gesture_conf_overrides = gesture_conf_overrides or {}
+        self.gesture_movement_overrides = gesture_movement_overrides or {}
+
+        self.window = args.window
+        self.idle_threshold = args.idle_threshold
+        self.confirm_frames = args.confirm_frames
+        # consecutive moving frames required before recording starts — filters
+        # one-frame noise blips so the detector ignores little movements
+        self.onset_frames = int(getattr(args, "onset_frames", 0) or 0)
+        self._onset_streak = 0
+        # time-based stillness confirmation (fps-independent); 0 = fall back to frames
+        self.confirm_seconds = float(getattr(args, "confirm_seconds", 0.0) or 0.0)
+        # min segment: reject tiny noise blips, but don't demand a full window
+        # (gestures at low fps can be shorter than the training window)
+        self.min_segment_frames = args.min_segment_frames if args.min_segment_frames > 0 \
+            else max(2, self.window // 4)
+        self.max_segment_frames = args.max_segment_frames
+        self.resume_frames = int(getattr(args, "resume_frames", 3) or 3)
+        self.emit_conf = args.emit_conf
+        self.vote_windows = args.vote_windows
+        self.vote_majority = args.vote_majority
+        self.cooldown_frames = args.cooldown_frames
+        self.sensors = args.sensors
+
+        self.frame_buffer = deque(maxlen=self.window)
+        # rolling history of ALL frames (for building model windows when the
+        # gesture segment is shorter than the training window)
+        self.raw_tail = deque(maxlen=max(self.window * 4, self.window + 10))
+        self.movement_history: deque[float] = deque(maxlen=3)
+        self.segment: list[dict] = []
+        self.state = "idle"
+        self.moving_streak = 0
+        self.still_streak = 0
+        self.cooldown = 0
+        self.emissions = 0
+        self.onset_len = 0   # len(raw_tail) at segment start (for padding)
+        # snapshot of the frames immediately BEFORE the gesture, taken at onset.
+        # raw_tail is a shifting bounded deque, so re-slicing it by index during
+        # the confirm window yields the wrong (post-gesture still) frames and
+        # makes the frozen prediction flicker — snapshot instead.
+        self.pre_onset_frames: list[dict] = []
+
+        # ── per-segment punch + fist repetition counting ──────────────────
+        # Punches are accel transients between consecutive frames; fist
+        # open/close cycles come from the CycleCounter's gyro-channel lock.
+        # Both are surfaced on the emission: boxing type is decided by the
+        # punch count (1 punch → two-arm, 2+ → one-arm) and the count is
+        # shown alongside the label (e.g. "ONE ARM BOXING  × 5").
+        self.punch_total = 0
+        self._punch_prev_accel: list[float] | None = None
+        self._was_in_punch = False
+        self._punch_cooldown = 0
+        self.fist_counter = CycleCounter()
+        self.last_punch_count = 0    # punch total of the most recent emission
+        self.last_fist_cycles = 0    # open/close cycles of the most recent emission
+        self.last_emitted_label: str | None = None  # raw model label (pre boxing-type override)
+        self.last_override = "model"  # how the last emission got its label: "model" | "osc" | "escape"
+
+        # making-fist-open signal override — ALWAYS on (replaces the model's
+        # unreliable fist label). Hardened so it fires only on a real open/close
+        # pattern (sideways accel, no accel-y, 2+ gyro channels above 4 dps).
+        # --fist-counter only adds the × N repetition counter display.
+        self.fist_counter_enabled = bool(getattr(args, "fist_counter", False))
+        self.osc_gesture = getattr(args, "oscillation_gesture", "making-fist-open")
+        self.osc_block = list(getattr(args, "oscillation_block", ["bye-bye", "clapping"]) or [])
+
+        # ── live diagnostics (surfaced in the under-the-hood GUI panel) ──
+        self.last_movement = 0.0      # movement score of the most recent frame
+        self.last_moving = False      # whether the last frame counted as 'moving'
+        self.last_reason: str | None = None   # why the last segment was rejected/aborted
+        self.last_emit: tuple | None = None   # (label, conf, n_agree, delay_frames)
+        self.segment_peak = 0.0       # peak movement during the current segment
+        self.event_log: deque[str] = deque(maxlen=60)
+
+        # time-based stillness accumulation (fps-independent confirm)
+        self.still_time = 0.0
+        self._dt = 0.0
+        self._last_frame_time: float | None = None
+
+    # ── internals ────────────────────────────────────────────────────
+    def _reset(self) -> None:
+        self.state = "idle"
+        self.segment = []
+        self.still_streak = 0
+        self.moving_streak = 0
+        self.segment_peak = 0.0
+        self.still_time = 0.0
+        self._onset_streak = 0
+
+    def _log(self, msg: str) -> None:
+        """Record an event (GUI log) and mirror it to the terminal under --debug."""
+        self.event_log.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+        if self.args.debug:
+            print(msg)
+
+    def _movement(self, window: list[dict]) -> float:
+        """Movement score over the most recent frames (responsive, not window-wide)."""
+        raw = 0.0
+        for name in self.sensors:
+            readings = _gather_readings(window, name)
+            recent = readings[-3:] if len(readings) > 3 else readings
+            raw += _movement_score(recent, self.sensor_types[name])
+        self.movement_history.append(raw)
+        return float(np.mean(self.movement_history))
+
+    def _is_moving(self, window: list[dict]) -> bool:
+        movement = self._movement(window)
+        self.last_movement = float(movement)
+        if movement >= self.idle_threshold:
+            self.last_moving = True
+            return True
+        imu_readings = _gather_readings(window, "imu")
+        osc = bool(imu_readings and len(imu_readings) >= 5
+                   and _check_gyro_oscillation(imu_readings[-5:]))
+        self.last_moving = osc
+        return osc
+
+    def _resolve_boxing(self, label: str) -> str:
+        """Boxing type is decided by the punch count, not the model: a single
+        punch is two-arm-boxing, two or more is one-arm-boxing."""
+        if label in ("one-arm-boxing", "two-arm-boxing"):
+            return "one-arm-boxing" if self.punch_total >= 2 else "two-arm-boxing"
+        return label
+
+    def _count_segment_frame(self, frame_data: dict) -> None:
+        """Count punches (accel transients) and fist open/close cycles while
+        the gesture segment is being recorded, so the emission can show a
+        repetition count (boxing → punch total, making-fist-open → cycles)."""
+        imu_frame = None
+        for name, stype in self.sensor_types.items():
+            if stype == "imu" and name in frame_data and frame_data[name]:
+                imu_frame = frame_data[name]
+                break
+        if imu_frame is None or not imu_frame.data:
+            return
+        accel = imu_frame.data.get("accel")
+        gyro = imu_frame.data.get("gyro")
+        if accel is not None:
+            accel = [float(a) for a in accel]
+            if self._punch_prev_accel is not None:
+                delta = sum(abs(accel[i] - self._punch_prev_accel[i]) for i in range(3))
+                in_punch = delta > getattr(self.args, "punch_threshold", 1.0)
+                if self._punch_cooldown > 0:
+                    self._punch_cooldown -= 1
+                elif in_punch and not self._was_in_punch:
+                    self.punch_total += 1
+                    self._punch_cooldown = getattr(self.args, "punch_cooldown", 10)
+                self._was_in_punch = in_punch
+            self._punch_prev_accel = accel[:]
+        if gyro is not None:
+            if self.fist_counter.channel < 0:
+                self.fist_counter.start([imu_frame])
+            self.fist_counter.update(list(float(g) for g in gyro))
+
+    # ── main entry: feed one frame ──────────────────────────────────
+    def feed(self, frame_data: dict):
+        """Feed one frame. Returns None, or an emission tuple
+        ``(label, conf, n_agree, delay_frames)`` when a gesture is confirmed."""
+        now = time.time()
+        self._dt = (now - self._last_frame_time) if self._last_frame_time is not None else 0.0
+        self._last_frame_time = now
+        self.frame_buffer.append(frame_data)
+        self.raw_tail.append(frame_data)
+        if len(self.frame_buffer) < 2:
+            return None
+        window = list(self.frame_buffer)
+        moving = self._is_moving(window)
+
+        # cooldown lockout — a single stop can never emit twice
+        if self.cooldown > 0:
+            self.cooldown -= 1
+            if self.cooldown == 0:
+                self._reset()
+            return None
+
+        # "real" movement = accelerometer transients only. Gyro oscillation
+        # (soli/wobble) is enough to BUFFER frames, but never to resume or to
+        # reset the confirm clock — a wrist wobble must not pollute the frozen
+        # gesture nor restart the wait.
+        accel_moving = self.last_movement >= self.idle_threshold
+
+        if moving:
+            # movement: buffer the moving frames. The gesture is frozen and
+            # decided ONLY once the user stops (see the still branch below).
+            if self.state == "idle":
+                if self._onset_streak < self.onset_frames:
+                    self._onset_streak += 1
+                    return None
+                self.state = "recording"
+                self.segment = [frame_data]
+                self.onset_len = len(self.raw_tail) - 1
+                self.pre_onset_frames = list(self.raw_tail)[:-1]
+                self.segment_peak = self.last_movement
+                self.last_reason = None
+                self.punch_total = 0
+                self._punch_prev_accel = None
+                self._was_in_punch = False
+                self._punch_cooldown = 0
+                self.fist_counter.reset()
+                self._count_segment_frame(frame_data)
+                return None
+            if self.state == "recording":
+                self.segment.append(frame_data)
+                self._count_segment_frame(frame_data)
+                self.segment_peak = max(self.segment_peak, self.last_movement)
+                if len(self.segment) > self.max_segment_frames:
+                    # too much continuous movement to be one gesture — abort
+                    self.last_reason = f"aborted: segment too long ({len(self.segment)}f)"
+                    self._log(f"[confirm] {self.last_reason}")
+                    self._reset()
+                return None
+            # state == "confirming": fall through so the confirming branch can
+            # run its resume logic on this moving frame
+        else:
+            if self.state == "recording":
+                # freeze the gesture at its last moving frame
+                self.state = "confirming"
+                self.still_streak = 0
+                self.still_time = 0.0
+                self.moving_streak = 0
+            self._onset_streak = 0
+
+        if self.state == "confirming":
+            if accel_moving:
+                # genuine gesture continuation — only a SUSTAINED run of real
+                # movement resumes buffering (and restarts the wait).
+                self.moving_streak += 1
+                if self.moving_streak >= self.resume_frames:
+                    self.state = "recording"
+                    self.segment.append(frame_data)
+                    self._count_segment_frame(frame_data)
+                    self.segment_peak = max(self.segment_peak, self.last_movement)
+                    self.still_streak = 0
+                    self.still_time = 0.0
+                    self.moving_streak = 0
+                    return None
+            else:
+                self.moving_streak = 0
+            # the confirm clock counts every frame — still or gyro-wobble — and
+            # never pauses for wrist jitter. Genuine accel movement pauses it
+            # (that's the gesture still going, not a stop), and only a SUSTAINED
+            # run of it resumes the segment (above).
+            if not accel_moving:
+                self.still_streak += 1
+                self.still_time += self._dt
+            if (self.confirm_seconds > 0 and self.still_time >= self.confirm_seconds) or \
+               (self.confirm_seconds <= 0 and self.still_streak >= self.confirm_frames):
+                return self._emit()
+        return None
+
+    # ── classify the recorded segment exactly once ──────────────────
+    def _emit(self):
+        seg = self.segment
+        n = len(seg)
+        usable_end = n  # segment holds only MOVING frames; the still tail is no longer included
+
+        if usable_end < self.min_segment_frames:
+            self.last_reason = f"rejected: segment {usable_end}f < min {self.min_segment_frames}f"
+            self._log(f"[confirm] {self.last_reason}")
+            self._reset()
+            return None
+
+        votes: list[tuple[str, float]] = []
+        # Build windows of exactly ``self.window`` frames ending at the last
+        # MOVING frame (usable_end). Segments shorter than the window are padded
+        # on the left with the frames that immediately preceded onset (idle),
+        # which mirrors how the rolling classifier saw the gesture live.
+        for k in range(self.vote_windows):
+            end = usable_end - k
+            if end <= 0:
+                break
+            L = end
+            pre = self.window - L
+            if pre > 0:
+                pre_frames = self.pre_onset_frames[-pre:] if self.pre_onset_frames else []
+            else:
+                pre_frames = []
+            win = pre_frames + seg[:end]
+            if len(win) < self.window:
+                break  # not enough history — treat as no window
+            win = win[-self.window:]
+            features = []
+            for name in self.sensors:
+                readings = _gather_readings(win, name)
+                features.extend(_compute_features(readings, self.sensor_types[name]))
+            try:
+                label, conf = _predict(self.pipeline, self.gestures, features)
+            except Exception as e:
+                if self.args.debug:
+                    print(f"  ⚠ prediction error: {e}")
+                continue
+            votes.append((label, conf))
+
+        if not votes:
+            self.last_reason = "rejected: no valid window"
+            self._log(f"[confirm] {self.last_reason}")
+            self._reset()
+            return None
+
+        tally: dict[str, list[float]] = {}
+        for label, conf in votes:
+            tally.setdefault(label, []).append(conf)
+        winner = max(tally, key=lambda lb: (len(tally[lb]), max(tally[lb])))
+        n_agree = len(tally[winner])
+        majority = self.vote_majority if self.vote_majority > 0 else len(votes)
+
+        if n_agree < majority:
+            detail = ", ".join(f"{lb}:{len(c)}" for lb, c in tally.items())
+            self.last_reason = f"rejected: votes split ({detail})"
+            self._log(f"[confirm] {self.last_reason}")
+            self._reset()
+            return None
+
+        conf = max(tally[winner])
+        min_conf = self.gesture_conf_overrides.get(winner, self.emit_conf)
+        if conf < min_conf:
+            self.last_reason = f"rejected: {winner} conf={conf:.3f} < {min_conf:.3f}"
+            self._log(f"[confirm] {self.last_reason}")
+            self._reset()
+            return None
+
+        self.emissions += 1
+        self.state = "cooldown"
+        self.cooldown = self.cooldown_frames
+        delay_frames = self.still_streak
+        self.last_punch_count = self.punch_total
+        self.last_emitted_label = winner
+        winner = self._resolve_boxing(winner)
+        # ── making-fist-open signal override ─────────────────────────
+        # The model often mislabels open/close fist (trained on sparse data),
+        # predicting palm-up-down/etc. instead. A repeated open/close is the
+        # ONE gesture that moves the accelerometer sideways (accel x/z
+        # crossings, no accel-y) AND oscillates 2+ gyro channels above a real
+        # amplitude. Breathing/resting noise is too weak to cross the gyro
+        # deadband repeatedly, so it no longer fires on every breath. The × N
+        # repetition counter is only shown with --fist-counter.
+        readings = _gather_readings(seg, "imu")
+        self.last_fist_cycles = _count_fist_cycles(readings) if readings \
+            else self.fist_counter.cycles()
+        self.last_override = "model"
+        if winner != self.osc_gesture \
+                and winner not in ("one-arm-boxing", "two-arm-boxing") \
+                and winner not in self.osc_block:
+            if _fist_oscillation(readings) and self.last_fist_cycles >= 2:
+                winner = self.osc_gesture
+                self.last_override = "osc"
+            # The model mislabels a repeated open/close fist as pull/push
+            # (both single-impulse linear gestures). A real push/pull is one
+            # impulse (even with a hard-stop bounce); a fist repeats — so ≥3
+            # cycles + gyro oscillation on 2+ channels is a fist, not a pull.
+            elif winner in ("push", "pull") \
+                    and self.last_fist_cycles >= 3 \
+                    and _push_pull_escape(readings):
+                winner = self.osc_gesture
+                self.last_override = "escape"
+        self.segment = []
+        self.segment_peak = 0.0
+        self.still_time = 0.0
+        self.still_streak = 0
+        self.moving_streak = 0
+        self.last_reason = None
+        self.last_emit = (winner, conf, n_agree, delay_frames)
+        self._log(f"> EMIT {winner}  conf={conf:.3f}  votes={n_agree}/{len(votes)}  +{delay_frames}f")
+        return winner, conf, n_agree, delay_frames
+
+    def predict_live(self) -> tuple[str, float] | None:
+        """What the model would predict on the CURRENT rolling window.
+
+        This is the raw per-frame prediction the old rolling demo showed
+        continuously. In confirmed mode it's advisory only (the state machine
+        gates actual emissions), but seeing it live tells you whether the
+        model is even registering your gesture before the segment completes.
+        Returns None until the rolling buffer is full.
+        """
+        if len(self.frame_buffer) < self.window:
+            return None
+        win = list(self.frame_buffer)[-self.window:]
+        features = []
+        for name in self.sensors:
+            readings = _gather_readings(win, name)
+            features.extend(_compute_features(readings, self.sensor_types[name]))
+        try:
+            return _predict(self.pipeline, self.gestures, features)
+        except Exception:
+            return None
+
+    def predict_frozen(self) -> tuple[str, float] | None:
+        """Prediction on the FROZEN segment tail — the answer ``_emit`` will use.
+
+        During the still/confirm window the rolling buffer fills with stillness,
+        so ``predict_live`` starts flickering through boxing/raise-arms/palm
+        garbage. This predicts on the frozen gesture instead, so the display
+        stays stable and matches the eventual emission.
+        """
+        seg = self.segment
+        n = len(seg)
+        if n == 0:
+            return None
+        end = n
+        L = end
+        pre = self.window - L
+        if pre > 0:
+            pre_frames = self.pre_onset_frames[-pre:] if self.pre_onset_frames else []
+        else:
+            pre_frames = []
+        win = pre_frames + seg[:end]
+        if len(win) < self.window:
+            return None
+        win = win[-self.window:]
+        features = []
+        for name in self.sensors:
+            readings = _gather_readings(win, name)
+            features.extend(_compute_features(readings, self.sensor_types[name]))
+        try:
+            label, conf = _predict(self.pipeline, self.gestures, features)
+            return self._resolve_boxing(label), conf
+        except Exception:
+            return None
+
+
+def run_confirmed(args, pipeline, expected_n_features, gestures, reader_map, sensor_types,
+                  gesture_conf_overrides: dict[str, float] | None = None,
+                  gesture_movement_overrides: dict[str, float] | None = None):
+    """Terminal loop for confirmed-gesture mode."""
+    global _accel_lp
+    _accel_lp = None
+    detector = ConfirmedGestureDetector(args, pipeline, gestures, sensor_types,
+                                        expected_n_features, gesture_conf_overrides,
+                                        gesture_movement_overrides)
+    print("\n=== Confirmed-Gesture Mode ===")
+    print("Perform a gesture, stop moving, and the result appears")
+    if detector.confirm_seconds > 0:
+        print(f"~{detector.confirm_seconds:.1f} s of stillness after you stop.\n")
+    else:
+        print(f"~{detector.confirm_frames} frames after you stop (the 1-2 s confirmation window).\n")
+    if (_accel_gain, _gyro_gain, _gyro_deadband) != (1.0, 1.0, 0.0):
+        print("  💡 Tip: the model was trained on raw accel/gyro. For maximum confidence")
+        print("     use --accel-gain 1.0 --gyro-gain 1.0 --gyro-deadband 0.0")
+        print()
+    print("Waiting for gesture...")
+    try:
+        while True:
+            frame_data = {name: reader.read() for name, reader in reader_map.items()}
+            emitted = detector.feed(frame_data)
+            if emitted is not None:
+                label, conf, n_agree, delay = emitted
+                if label == getattr(detector.args, "oscillation_gesture", "making-fist-open") \
+                        and detector.fist_counter_enabled:
+                    label = _repeat_label(label, detector.last_fist_cycles)
+                via = f"  [via {detector.last_override}]" \
+                    if label.startswith("MAKING FIST OPEN") \
+                    else f"  [model={detector.last_emitted_label}]"
+                print(f"> {label}  (conf={conf:.2f}, votes={n_agree}/{detector.vote_windows}, "
+                      f"+{delay}f after gesture){via}")
+            time.sleep(0.02)
+    except KeyboardInterrupt:
+        print(f"\n\nDemo stopped. {detector.emissions} gesture(s) emitted.")
+    finally:
+        for reader in reader_map.values():
+            reader.stop()
+
+
+def run_confirmed_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_types,
+                      gesture_conf_overrides: dict[str, float] | None = None,
+                      gesture_movement_overrides: dict[str, float] | None = None):
+    """Under-the-hood GUI for confirmed-gesture mode.
+
+    Big label on top (what was emitted), plus a live diagnostics panel that
+    shows everything the detector is doing in real time:
+
+      • movement score vs the idle threshold (the onset trigger)
+      • the model's raw per-frame prediction (what it sees RIGHT NOW)
+      • state-machine internals: onset streak, segment length, peak movement,
+        still/confirm streak, cooldown countdown
+      • every transition, rejection and emission in a scrolling event log
+
+    If a gesture isn't being picked up you can SEE why: movement stuck above
+    the threshold (never confirms), prediction below the per-gesture conf gate
+    (rejected), or the model seeing something else entirely.
+    """
+    try:
+        import tkinter as tk
+    except ImportError:
+        print("--gui requires tkinter (install python-tk)")
+        return
+
+    global _accel_lp
+    _accel_lp = None
+    detector = ConfirmedGestureDetector(args, pipeline, gestures, sensor_types,
+                                        expected_n_features, gesture_conf_overrides,
+                                        gesture_movement_overrides)
+
+    PALETTE = {
+        "bg": "#0d0d10",
+        "panel": "#141419",
+        "line": "#2a2a32",
+        "fg": "#d4d4dc",
+        "dim": "#6a6a72",
+        "muted": "#4a4a52",
+        "accent": "#4a7cbf",
+        "ok": "#5a9a6a",
+        "warn": "#b89a3a",
+        "log": "#9a9aa2",
+    }
+    FONTS = {
+        "big": ("Helvetica", 54, "bold"),
+        "title": ("Helvetica", 11, "bold"),
+        "mono": ("Courier", 11),
+        "mono_small": ("Courier", 10),
+        "mono_tiny": ("Courier", 9),
+    }
+
+    root = tk.Tk()
+    root.title("Gesture Recognition")
+    root.geometry("760x800")
+    root.configure(bg=PALETTE["bg"])
+    root.minsize(560, 680)
+
+    tk.Label(root, text="CONFIRMED-GESTURE MODE", font=FONTS["title"],
+             fg=PALETTE["accent"], bg=PALETTE["bg"]).pack(pady=(12, 0))
+    tk.Label(root, text="do the gesture → stop & hold still ~1s → result appears",
+             font=FONTS["mono_tiny"], fg=PALETTE["muted"], bg=PALETTE["bg"]).pack(pady=(2, 0))
+    status = tk.Label(root, text="○ waiting for a gesture…", font=("Courier", 13),
+                      fg=PALETTE["dim"], bg=PALETTE["bg"])
+    status.pack(pady=(2, 0))
+    gesture_label = tk.Label(root, text="—", font=FONTS["big"],
+                             fg="#ffffff", bg=PALETTE["bg"])
+    gesture_label.pack(expand=True, fill="both", pady=(2, 0))
+
+    # ── under-the-hood panel ────────────────────────────────────────
+    panel = tk.Frame(root, bg=PALETTE["panel"], highlightthickness=1,
+                     highlightbackground=PALETTE["line"])
+    panel.pack(fill="x", padx=14, pady=(0, 4))
+
+    # movement meter (the onset trigger)
+    mv_row = tk.Frame(panel, bg=PALETTE["panel"])
+    mv_row.pack(fill="x", padx=10, pady=(8, 2))
+    tk.Label(mv_row, text="movement  (onset trigger)", font=FONTS["mono_small"],
+             fg=PALETTE["muted"], bg=PALETTE["panel"], anchor="w").pack(side="left")
+    move_val = tk.Label(mv_row, text="0.0000", font=FONTS["mono"],
+                        fg=PALETTE["fg"], bg=PALETTE["panel"], anchor="e")
+    move_val.pack(side="right")
+    move_bar = tk.Canvas(panel, height=8, bg=PALETTE["bg"], highlightthickness=1,
+                         highlightbackground=PALETTE["line"])
+    move_bar.pack(fill="x", padx=10, pady=(0, 2))
+    moving_lbl = tk.Label(panel, text="○ still", font=FONTS["mono_tiny"],
+                          fg=PALETTE["dim"], bg=PALETTE["panel"], anchor="w")
+    moving_lbl.pack(fill="x", padx=10, pady=(0, 2))
+
+    # raw per-frame model prediction
+    model_label = tk.Label(panel, text="model sees: — (warming up 0/20)",
+                           font=FONTS["mono_small"], fg=PALETTE["dim"],
+                           bg=PALETTE["panel"], anchor="w")
+    model_label.pack(fill="x", padx=10, pady=(1, 2))
+
+    # state-machine internals
+    state_line = tk.Label(panel, text="IDLE · onset 0/3 · still 0/40 · seg 0f · peak 0.000",
+                          font=FONTS["mono_small"], fg=PALETTE["dim"],
+                          bg=PALETTE["panel"], anchor="w")
+    state_line.pack(fill="x", padx=10, pady=(1, 2))
+
+    # last rejection / abort reason
+    reason = tk.Label(panel, text="—", font=FONTS["mono_small"], fg=PALETTE["muted"],
+                      bg=PALETTE["panel"], anchor="w", wraplength=700, justify="left")
+    reason.pack(fill="x", padx=10, pady=(1, 2))
+
+    # event log
+    tk.Label(panel, text="EVENT LOG — every transition, rejection & emission",
+             font=FONTS["mono_tiny"], fg=PALETTE["muted"], bg=PALETTE["panel"],
+             anchor="w").pack(fill="x", padx=10, pady=(6, 0))
+    log_label = tk.Label(panel, text="", font=FONTS["mono_tiny"], fg=PALETTE["log"],
+                         bg=PALETTE["bg"], anchor="w", justify="left", wraplength=700)
+    log_label.pack(fill="x", padx=10, pady=(2, 8))
+
+    info = tk.Label(root, text="emissions: 0", font=FONTS["mono_small"],
+                    fg=PALETTE["dim"], bg=PALETTE["bg"])
+    info.pack(pady=(0, 10))
+
+    print("Under-the-hood GUI:\n"
+          "  movement meter  → the onset trigger (idle threshold)\n"
+          "  model sees:     → raw per-frame prediction (advisory only)\n"
+          "  state line      → state machine internals (onset/still streaks)\n"
+          "  event log       → why segments were rejected/emitted")
+
+    running = [True]
+
+    def close():
+        running[0] = False
+        root.destroy()
+
+    def _draw_bar(canvas: tk.Canvas, fraction: float, color: str) -> None:
+        w = canvas.winfo_width()
+        if w < 2:
+            return
+        canvas.delete("all")
+        bar_w = max(1, int(w * fraction))
+        canvas.create_rectangle(0, 0, bar_w, 10, fill=color, outline="")
+        canvas.create_rectangle(bar_w, 0, w, 10, fill=PALETTE["bg"], outline="")
+
+    def poll():
+        if not running[0]:
+            return
+        try:
+            frame_data = {name: reader.read() for name, reader in reader_map.items()}
+            emitted = detector.feed(frame_data)
+
+            # movement meter
+            mv = detector.last_movement
+            move_val.config(
+                text=f"{mv:.4f}  (idle τ={detector.idle_threshold:.2f})")
+            _draw_bar(move_bar, min(mv / max(detector.idle_threshold * 3, 0.01), 1.0),
+                      PALETTE["ok"] if detector.last_moving else PALETTE["muted"])
+            if detector.last_moving:
+                moving_lbl.config(text="● moving", fg=PALETTE["ok"])
+            else:
+                moving_lbl.config(text="○ still (confirming)", fg=PALETTE["dim"])
+
+            # model prediction — live window while moving, frozen gesture tail
+            # while confirming (so it doesn't flicker through garbage on the
+            # still frames); hidden otherwise
+            if detector.state == "recording":
+                live = detector.predict_live()
+            elif detector.state == "confirming":
+                live = detector.predict_frozen()
+            else:
+                live = None
+            if live is None:
+                model_label.config(text="model sees: —", fg=PALETTE["dim"])
+            else:
+                lbl, conf = live
+                gate = detector.gesture_conf_overrides.get(lbl, detector.emit_conf)
+                model_label.config(
+                    text=f"model sees: {lbl}  (conf={conf:.2f}, gate={gate:.2f})",
+                    fg=PALETTE["ok"] if conf >= gate else PALETTE["warn"])
+
+            # state-machine internals
+            st = detector.state
+            if st == "recording":
+                state_line.config(
+                    text=f"BUFFERING · seg {len(detector.segment)}f · peak {detector.segment_peak:.3f}",
+                    fg=PALETTE["warn"])
+            elif st == "confirming":
+                if detector.confirm_seconds > 0:
+                    still_txt = f"still {detector.still_time:.1f}s/{detector.confirm_seconds:.1f}s"
+                else:
+                    still_txt = f"still {detector.still_streak}/{detector.confirm_frames}"
+                state_line.config(
+                    text=f"CONFIRMING · seg frozen {len(detector.segment)}f · {still_txt}",
+                    fg=PALETTE["warn"])
+            elif st == "cooldown":
+                state_line.config(text=f"COOLDOWN · {detector.cooldown}f lockout", fg=PALETTE["ok"])
+            else:
+                state_line.config(
+                    text=f"IDLE · still {detector.still_streak} · cooldown {detector.cooldown}",
+                    fg=PALETTE["dim"])
+
+            # rejection / abort reason
+            if detector.last_reason:
+                reason.config(text=f"⚠ {detector.last_reason}", fg=PALETTE["warn"])
+            else:
+                reason.config(text="—", fg=PALETTE["muted"])
+
+            # event log (tail)
+            log_label.config(text="\n".join(list(detector.event_log)[-12:]) or "—")
+
+            # status line
+            if st == "recording":
+                status.config(text=f"● moving ({len(detector.segment)}f) — stop when done",
+                              fg=PALETTE["warn"])
+            elif st == "confirming":
+                if detector.confirm_seconds > 0:
+                    hold = f"{detector.still_time:.1f}s/{detector.confirm_seconds:.1f}s"
+                else:
+                    hold = f"{detector.still_streak}/{detector.confirm_frames}"
+                status.config(text=f"○ stop & hold… {hold}", fg=PALETTE["warn"])
+            elif st == "cooldown":
+                status.config(text="✓ gesture locked", fg=PALETTE["ok"])
+            else:
+                status.config(text="○ waiting for a gesture…", fg=PALETTE["dim"])
+
+            if emitted is not None:
+                label, conf, n_agree, delay = emitted
+                if label == getattr(detector.args, "oscillation_gesture", "making-fist-open") \
+                        and detector.fist_counter_enabled:
+                    display = _repeat_label(label, detector.last_fist_cycles)
+                else:
+                    display = label.upper().replace("-", "\n")
+                gesture_label.config(text=display)
+                info.config(text=f"emissions: {detector.emissions}   last: {display}  conf={conf:.2f}  "
+                                 f"votes={n_agree}/{detector.vote_windows}  +{delay}f")
+                via = f"  [via {detector.last_override}]" \
+                    if display.startswith("MAKING FIST OPEN") \
+                    else f"  [model={detector.last_emitted_label}]"
+                print(f"> {display}  (conf={conf:.2f}, votes={n_agree}/{detector.vote_windows}, +{delay}f){via}")
+                root.after(1500, lambda: gesture_label.config(text="—"))
+        except Exception as e:
+            status.config(text=f"⚠ {e}", fg=PALETTE["warn"])
+        root.after(25, poll)
+
+    root.protocol("WM_DELETE_WINDOW", close)
+    root.after(100, poll)
+    try:
+        root.mainloop()
+    finally:
+        for reader in reader_map.values():
+            reader.stop()
+
+
 def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sensor_types,
                  gesture_conf_overrides: dict[str, float] | None = None,
                  gesture_movement_overrides: dict[str, float] | None = None):
@@ -457,6 +1349,8 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
     # Oscillation persistence counter — requires ~2 seconds of sustained
     # oscillation before overriding the prediction. Resets if oscillation stops.
     osc_persistence = 0
+    punch_total = 0  # punches counted in the current boxing session (kept while boxing stays up)
+    fist_counter = CycleCounter()  # open/close fist repetition counter
 
     # Reset gravity-tracking HPF for a fresh session
     global _accel_lp
@@ -510,17 +1404,23 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                 if imu_readings and _check_gyro_oscillation(imu_readings):
                     is_idle = False
 
-            # ── boxing observation: count punches, determine type ──
-            if observe_until is not None and current_accel is not None and prev_accel is not None:
+            # ── boxing: count punches ──────────────────────────────
+            # Counts while the type is being determined (observation) AND
+            # while boxing stays on screen, so the running punch count is
+            # always visible.
+            boxing_active = observe_until is not None or displayed in ("one-arm-boxing", "two-arm-boxing")
+            if boxing_active and current_accel is not None and prev_accel is not None:
                 delta = sum(abs(current_accel[i] - prev_accel[i]) for i in range(3))
                 in_punch = delta > args.punch_threshold
                 if args.debug:
-                    print(f"  [obs] punch={punch_count}, delta={delta:.3f} (th={args.punch_threshold}){' ⚡' if in_punch else ''}")
+                    print(f"  [obs] punch={punch_total}, delta={delta:.3f} (th={args.punch_threshold}){' ⚡' if in_punch else ''}")
                 if punch_cooldown > 0:
                     punch_cooldown -= 1
                 elif in_punch and not was_in_punch:
-                    punch_count += 1
+                    punch_total += 1
                     punch_cooldown = args.punch_cooldown
+                    if displayed in ("one-arm-boxing", "two-arm-boxing"):
+                        print(f"  [obs] → {displayed}")
                     was_in_punch = in_punch
 
             if current_accel is not None:
@@ -528,27 +1428,25 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
 
             if observe_until is not None:
                 if frame_count >= observe_until:
-                    if punch_count >= 2:
+                    if punch_total >= 2:
                         displayed = "one-arm-boxing"
-                        print("> one-arm-boxing")
                     else:
                         displayed = "two-arm-boxing"
-                        print("> two-arm-boxing")
                     boxing_type_locked = displayed  # lock this boxing type
+                    print(f"> {displayed}")
                     display_age = 0
                     challenge_count = 0
                     challenge_label = None
                     hold_counter = max_hold_frames
-                    # reset observation state
+                    # stop observing but KEEP counting punches while boxing stays up
                     observe_until = None
-                    punch_count = 0
                     was_in_punch = False
                     punch_cooldown = 0
                     time.sleep(0.02)
                     continue
                 else:
                     if args.debug:
-                        print(f"  [obs] awaiting — punch={punch_count}")
+                        print(f"  [obs] awaiting — punch={punch_total}")
                     time.sleep(0.02)
                     continue
 
@@ -572,6 +1470,8 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                         punch_cooldown = 0
                         boxing_type_locked = None
                         osc_persistence = 0
+                        punch_total = 0
+                        fist_counter.reset()
                         idle_cooldown = 15  # suppress predictions briefly to prevent flash
                 else:
                     smooth_buffer.clear()
@@ -584,6 +1484,8 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                     punch_cooldown = 0
                     boxing_type_locked = None
                     osc_persistence = 0
+                    punch_total = 0
+                    fist_counter.reset()
                 continue
 
             # hold_counter is set to max_hold_frames when a new gesture is displayed
@@ -621,6 +1523,21 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                 osc_persistence += 1
             else:
                 osc_persistence = 0
+
+            # ── open/close fist cycle counter ─────────────────────
+            # While oscillation is sustained, feed the current frame's gyro
+            # into the counter (locks onto the strongest channel at start).
+            if sustained_osc:
+                if fist_counter.channel < 0:
+                    fist_counter.start(imu_readings)
+                cur_gyro = None
+                for name, stype in sensor_types.items():
+                    if stype == "imu" and name in frame_data and frame_data[name]:
+                        cur_gyro = frame_data[name].data.get("gyro")
+                        break
+                fist_counter.update(cur_gyro)
+            else:
+                fist_counter.reset()
 
             # ── oscillation sustained — check displayed gesture first ──
             # By the time oscillation has persisted for ~1s, the model may no
@@ -712,6 +1629,7 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                             if args.debug:
                                 print(f"  ⚠ ignoring boxing — low movement ({movement:.3f} < {args.min_boxing_movement})")
                             # Fall through: show the model's prediction anyway
+                            punch_total = 0
                             print(f"> {smoothed}  (conf={conf:.2f}, low mvmt)")
                             displayed = smoothed
                             display_age = 0
@@ -720,12 +1638,12 @@ def run_terminal(args, pipeline, expected_n_features, gestures, reader_map, sens
                             hold_counter = max_hold_frames
                         else:
                             observe_until = frame_count + args.boxing_delay_frames
-                            punch_count = 0
+                            punch_total = 0
                             was_in_punch = False
                             punch_cooldown = 0
                             print(f"  observing for punches ({args.boxing_delay_frames} frames)...")
                     else:
-                        print(f"> {smoothed}  (conf={conf:.2f})")
+                        print(f"> {_repeat_label(smoothed, fist_counter.cycles() if smoothed == args.oscillation_gesture else 0)}  (conf={conf:.2f})")
                         displayed = smoothed
                         display_age = 0
                         challenge_count = 0
@@ -782,6 +1700,8 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
     boxing_type_locked: str | None = None  # once set, other boxing type can't replace
     idle_cooldown = 0  # suppresses predictions briefly after idle clears
     osc_persistence = 0  # frames of sustained oscillation (requires ~2s to override)
+    punch_total = 0  # punches counted in the current boxing session (kept while boxing stays up)
+    fist_counter = CycleCounter()  # open/close fist repetition counter
     active_start: float | None = None
     total_active_time = 0.0
     fps_samples: deque[float] = deque(maxlen=60)
@@ -938,6 +1858,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
         nonlocal idle_cooldown, active_start, total_active_time, osc_persistence
         nonlocal fps_samples, last_fps_time, idle_start
         nonlocal observe_until, punch_count, prev_accel, was_in_punch, punch_cooldown, boxing_type_locked
+        nonlocal punch_total, fist_counter
 
         if not running:
             return
@@ -1005,15 +1926,23 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     if imu_readings and _check_gyro_oscillation(imu_readings):
                         is_idle = False
 
-                # ── boxing observation: count punches, determine type ──
-                if observe_until is not None and current_accel is not None and prev_accel is not None:
+                # ── boxing: count punches ────────────────────────────────
+                # Counts while the type is being determined (observation) AND
+                # while boxing stays on screen, so the running punch count is
+                # always visible. A "punch" = a per-frame accel transient above
+                # punch_threshold, debounced by punch_cooldown.
+                boxing_active = observe_until is not None or displayed in ("one-arm-boxing", "two-arm-boxing")
+                if boxing_active and current_accel is not None and prev_accel is not None:
                     delta = sum(abs(current_accel[i] - prev_accel[i]) for i in range(3))
                     in_punch = delta > args.punch_threshold
                     if punch_cooldown > 0:
                         punch_cooldown -= 1
                     elif in_punch and not was_in_punch:
-                        punch_count += 1
+                        punch_total += 1
                         punch_cooldown = args.punch_cooldown
+                        if displayed in ("one-arm-boxing", "two-arm-boxing"):
+                            gesture_label.config(text=displayed.upper().replace("-", "\n"),
+                                                 fg=PALETTE["success"])
                     was_in_punch = in_punch
 
                 if current_accel is not None:
@@ -1021,30 +1950,27 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
 
                 if observe_until is not None:
                     if frame_count >= observe_until:
-                        if punch_count >= 2:
-                            display_text = "ONE-ARM-BOXING"
+                        if punch_total >= 2:
                             displayed = "one-arm-boxing"
                         else:
-                            display_text = "TWO-ARM-BOXING"
                             displayed = "two-arm-boxing"
-                        print(f"[{time.strftime('%H:%M:%S')}] {displayed.upper().replace('-', ' ')}")
+                        print(f"[{time.strftime('%H:%M:%S')}] {displayed}")
                         boxing_type_locked = displayed  # lock this boxing type
-                        gesture_label.config(text=display_text, fg=PALETTE["success"])
+                        gesture_label.config(text=displayed.upper().replace("-", "\n"), fg=PALETTE["success"])
                         display_age = 0
                         challenge_count = 0
                         challenge_label = None
                         hold_counter = max_hold_frames
                         error_label.config(text="")
-                        # reset observation state
+                        # stop observing but KEEP counting punches while boxing stays up
                         observe_until = None
-                        punch_count = 0
                         was_in_punch = False
                         punch_cooldown = 0
                         root.after(25, poll)
                         return
                     else:
                         gesture_label.config(fg=PALETTE["warn"])
-                        error_label.config(text=f"observing... {punch_count} punches", fg=PALETTE["fg_dim"])
+                        error_label.config(text=f"observing... {punch_total} punches", fg=PALETTE["fg_dim"])
                         root.after(25, poll)
                         return
 
@@ -1096,6 +2022,8 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                             punch_cooldown = 0
                             boxing_type_locked = None
                             osc_persistence = 0
+                            punch_total = 0
+                            fist_counter.reset()
                             idle_cooldown = 15  # suppress predictions briefly to prevent flash
                             error_label.config(text="")
                     else:
@@ -1109,6 +2037,8 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         punch_cooldown = 0
                         boxing_type_locked = None
                         osc_persistence = 0
+                        punch_total = 0
+                        fist_counter.reset()
                     root.after(25, poll)
                     return
 
@@ -1144,6 +2074,24 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                     osc_persistence += 1
                 else:
                     osc_persistence = 0
+
+                # ── open/close fist cycle counter ─────────────────────
+                # While oscillation is sustained, feed the current frame's
+                # gyro into the counter (locks onto the strongest channel).
+                if sustained_osc:
+                    if fist_counter.channel < 0:
+                        fist_counter.start(imu_readings)
+                    cur_gyro = None
+                    for name, stype in sensor_types.items():
+                        if stype == "imu" and name in frame_data and frame_data[name]:
+                            cur_gyro = frame_data[name].data.get("gyro")
+                            break
+                    fist_counter.update(cur_gyro)
+                    if displayed == args.oscillation_gesture:
+                        gesture_label.config(
+                            text=_repeat_label(displayed, fist_counter.cycles()), fg="#ffffff")
+                else:
+                    fist_counter.reset()
 
                 # ── oscillation sustained — check displayed gesture first ──
                 if osc_persistence >= args.oscillation_min_frames:
@@ -1221,26 +2169,26 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
                         if smoothed in ("one-arm-boxing", "two-arm-boxing"):
                             if movement < args.min_boxing_movement:
                                 error_label.config(text=f"{smoothed} (low movement: {movement:.2f})", fg=PALETTE["warn"])
-                                display_upper = smoothed.upper()
-                                gesture_label.config(text=display_upper, fg=PALETTE["warn"])
+                                punch_total = 0
+                                gesture_label.config(text=smoothed.upper().replace("-", "\n"), fg=PALETTE["warn"])
                                 displayed = smoothed
-                                print(f"[{time.strftime('%H:%M:%S')}] {smoothed.upper().replace('-', ' ')}")
+                                print(f"[{time.strftime('%H:%M:%S')}] {smoothed}")
                                 display_age = 0
                                 challenge_count = 0
                                 challenge_label = None
                                 hold_counter = max_hold_frames
                             else:
                                 observe_until = frame_count + args.boxing_delay_frames
-                                punch_count = 0
+                                punch_total = 0
                                 was_in_punch = False
                                 punch_cooldown = 0
                                 gesture_label.config(fg=PALETTE["warn"])
                                 error_label.config(text=f"observing for punches ({args.boxing_delay_frames} frames)...", fg=PALETTE["fg_dim"])
                         else:
-                            display_upper = smoothed.upper()
+                            display_upper = _repeat_label(smoothed, fist_counter.cycles() if smoothed == args.oscillation_gesture else 0)
                             gesture_label.config(text=display_upper, fg="#ffffff")
                             displayed = smoothed
-                            print(f"[{time.strftime('%H:%M:%S')}] {smoothed.upper().replace('-', ' ')}")
+                            print(f"[{time.strftime('%H:%M:%S')}] {display_upper}")
                             display_age = 0
                             challenge_count = 0
                             challenge_label = None
@@ -1311,7 +2259,7 @@ def run_gui(args, pipeline, expected_n_features, gestures, reader_map, sensor_ty
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Real-time gesture classification demo")
-    parser.add_argument("--model", default="models/v2/imu_v2_best_model.pkl",
+    parser.add_argument("--model", default="models/imu_v3_best_model.pkl",
                         help="Path to trained model pickle")
     parser.add_argument("--features", default=None,
                         help="Path to features NPZ (for metadata)")
@@ -1323,10 +2271,13 @@ def main() -> None:
                         help="Sensor mode")
     parser.add_argument("--uwb-ports", nargs="+", default=["/dev/ttyACM0"],
                         help="Serial ports for UWB devices")
-    parser.add_argument("--window", type=int, default=5,
-                        help="Window size (matches training)")
-    parser.add_argument("--idle-threshold", type=float, default=0.25,
-                        help="Movement score (linear accel from HPF) below this = idle (default: 0.45)")
+    parser.add_argument("--window", type=int, default=20,
+                        help="Window size (matches training; v3 model = 20)")
+    parser.add_argument("--idle-threshold", type=float, default=0.10,
+                        help="Movement score (linear accel from HPF) below this = idle (default: 0.10). "
+                             "Higher values (e.g. 0.45) fragment a gesture into tiny sub-segments "
+                             "between the soli's intermittent movement dips, and those get rejected "
+                             "as too short.")
     parser.add_argument("--min-conf", type=float, default=0.68,
                         help="Minimum prediction confidence to accept (default: 0.68)")
     parser.add_argument("--smooth", type=int, default=10,
@@ -1345,12 +2296,12 @@ def main() -> None:
                         help="Frames to observe after boxing is detected before classifying one-arm vs two-arm (default: 60)")
     parser.add_argument("--min-boxing-movement", type=float, default=0.8,
                         help="Minimum movement score to trigger boxing observation (default: 0.8)")
-    parser.add_argument("--accel-gain", type=float, default=1.05,
-                        help="Scale factor for accelerometer values (default: 1.05 — tiny emphasis on linear movement)")
-    parser.add_argument("--gyro-gain", type=float, default=0.6,
-                        help="Scale factor for gyro values before model (default: 0.6)")
-    parser.add_argument("--gyro-deadband", type=float, default=2.0,
-                        help="Gyro deadband in dps — values below this are zeroed out (default: 2.0)")
+    parser.add_argument("--accel-gain", type=float, default=1.0,
+                        help="Scale factor for accelerometer values (default: 1.0 — model trained on raw accel)")
+    parser.add_argument("--gyro-gain", type=float, default=1.0,
+                        help="Scale factor for gyro values before model (default: 1.0 — model trained on raw gyro)")
+    parser.add_argument("--gyro-deadband", type=float, default=0.0,
+                        help="Gyro deadband in dps — values below this are zeroed out (default: 0.0)")
     parser.add_argument("--gesture-conf", nargs="+", default=[],
                         help="Per-gesture confidence thresholds: gesture=threshold (e.g. push=0.85 soli=0.9). "
                              "Overrides --min-conf for specific gestures.")
@@ -1381,6 +2332,50 @@ def main() -> None:
                         help="IMU serial port")
     parser.add_argument("--imu-baud", type=int, default=115200,
                         help="IMU serial baud rate")
+    # ── Confirmed-gesture mode (buffer-then-confirm) ─────────────────
+    parser.add_argument("--confirmed", action="store_true",
+                        help="Confirmed-gesture mode: buffer movement continuously, and the moment "
+                             "you stop moving (after confirm-seconds of stillness) emit exactly one "
+                             "prediction from the frozen last-second of data. Zero false positives.")
+    parser.add_argument("--confirm-frames", type=int, default=40,
+                        help="Still frames after the gesture that confirm completion, used only when "
+                             "--confirm-seconds is 0 (~1s at 40fps, default: 40)")
+    parser.add_argument("--confirm-seconds", type=float, default=1.5,
+                        help="Seconds of stillness required after the gesture before emitting — "
+                             "time-based and fps-independent (default: 1.5). Set 0 to fall back to "
+                             "--confirm-frames (frame-based).")
+    parser.add_argument("--min-segment-frames", type=int, default=0,
+                        help="Min gesture length in frames; 0 = auto (max(2, window//4)) "
+                             "(default: 0)")
+    parser.add_argument("--resume-frames", type=int, default=3,
+                        help="Consecutive moving frames during the confirm window that count as a "
+                             "genuine gesture continuation and resume buffering (wobble shorter than "
+                             "this never pauses or restarts the confirm clock) (default: 3)")
+    parser.add_argument("--onset-frames", type=int, default=2,
+                        help="Consecutive moving frames required before recording a gesture starts. "
+                             "Raises this (e.g. 4-6) to ignore small movements/wrist jitter; the "
+                             "detector won't start until movement is sustained (default: 2)")
+    parser.add_argument("--fist-counter", action="store_true",
+                        help="Show the open/close-fist repetition counter ('MAKING FIST OPEN × N'). "
+                             "The making-fist-open detection itself is ALWAYS on (signal override, "
+                             "hardened against breathing); this flag only adds the × N counter "
+                             "display. Default: off, plain 'MAKING FIST OPEN'.")
+    parser.add_argument("--max-segment-frames", type=int, default=240,
+                        help="Max gesture length in frames; longer segments are rejected (default: 240 = 6s at 40fps)")
+    parser.add_argument("--emit-conf", type=float, default=0.30,
+                        help="Minimum confidence to emit a confirmed prediction. The zero-false- "
+                             "positive guarantee comes from the state machine (stillness "
+                             "confirmation + one emission per segment + cooldown); this gate is a "
+                             "secondary filter. Short gestures padded with idle frames can score as "
+                             "low as 0.3, so the default is permissive; raise it (e.g. 0.6+) to "
+                             "show only high-confidence results at the cost of more misses "
+                             "(default: 0.30)")
+    parser.add_argument("--vote-windows", type=int, default=3,
+                        help="Number of overlapping tail windows voted on (default: 3)")
+    parser.add_argument("--vote-majority", type=int, default=2,
+                        help="Votes required to emit; 0 = all windows must agree (default: 2 of --vote-windows)")
+    parser.add_argument("--cooldown-frames", type=int, default=30,
+                        help="Frames to lock out after emitting so one trial emits once (default: 30)")
     args = parser.parse_args()
 
     # ── Parse per-gesture overrides ─────────────────────────────────
@@ -1527,7 +2522,14 @@ def main() -> None:
     _gyro_gain = args.gyro_gain
     _gyro_deadband = args.gyro_deadband
 
-    if args.gui:
+    if args.confirmed:
+        if args.gui:
+            run_confirmed_gui(args, pipeline, expected_n_features, gestures_list, reader_map,
+                              sensor_types, gesture_conf_overrides, gesture_movement_overrides)
+        else:
+            run_confirmed(args, pipeline, expected_n_features, gestures_list, reader_map,
+                          sensor_types, gesture_conf_overrides, gesture_movement_overrides)
+    elif args.gui:
         run_gui(args, pipeline, expected_n_features, gestures_list, reader_map,
                 sensor_types, gesture_conf_overrides, gesture_movement_overrides)
     else:
